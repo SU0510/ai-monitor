@@ -10,7 +10,9 @@ import {
 } from "../core/db";
 import { collectAccount, deleteAccountAndSecret } from "../core/collector";
 import { providers, getProvider } from "../providers";
+import { CUSTOM_PREFIX } from "../providers/custom";
 import BalanceChart from "./BalanceChart.vue";
+import CustomApiManager from "./CustomApiManager.vue";
 import { i18n } from "../i18n";
 import {
   accounts,
@@ -33,38 +35,70 @@ const formProvider = ref("deepseek");
 const formName = ref("");
 const formKey = ref("");
 const adding = ref(false);
+const showCustomManager = ref(false);
+
+// 自定义 API 多 key 输入：一把 key 对应一个账户
+const customKeys = ref<{ name: string; key: string }[]>([{ name: "", key: "" }]);
+
+function isCustomProvider(): boolean {
+  return formProvider.value.startsWith(CUSTOM_PREFIX);
+}
+
+async function addSingleAccount(providerId: string, name: string, key: string): Promise<void> {
+  const provider = getProvider(providerId);
+  const id = await dbAddAccount(providerId, name);
+  try {
+    await invoke("save_secret", { account: String(id), secret: key });
+  } catch (e) {
+    await dbDeleteAccount(id);
+    throw e;
+  }
+  if (provider?.balanceSupported) {
+    const acc = accounts.value.find((a) => a.id === id);
+    if (acc) await collectAccount(acc);
+  }
+}
 
 async function addAccount(): Promise<void> {
   const providerId = formProvider.value;
   const provider = getProvider(providerId);
   const name = formName.value.trim() || provider?.name || providerId;
-  const key = formKey.value.trim();
-  if (!key) {
-    showToast(t("dashboard.toast.apiKeyRequired"));
-    return;
-  }
+
   adding.value = true;
   try {
-    const id = await dbAddAccount(providerId, name);
-    try {
-      await invoke("save_secret", { account: String(id), secret: key });
-    } catch (e) {
-      await dbDeleteAccount(id);
-      throw e;
+    if (isCustomProvider()) {
+      const rows = customKeys.value.filter((r) => r.key.trim());
+      if (rows.length === 0) {
+        showToast(t("dashboard.toast.apiKeyRequired"));
+        return;
+      }
+      for (const row of rows) {
+        const accName = row.name.trim() || `${name} ${customKeys.value.indexOf(row) + 1}`;
+        await addSingleAccount(providerId, accName, row.key.trim());
+      }
+      customKeys.value = [{ name: "", key: "" }];
+      showToast(t("dashboard.toast.addOk", { name }));
+    } else {
+      const key = formKey.value.trim();
+      if (!key) {
+        showToast(t("dashboard.toast.apiKeyRequired"));
+        return;
+      }
+      await addSingleAccount(providerId, name, key);
+      formKey.value = "";
+      showToast(t("dashboard.toast.addOk", { name }));
     }
-    if (provider?.balanceSupported) {
-      const acc = accounts.value.find((a) => a.id === id);
-      if (acc) await collectAccount(acc);
-    }
-    formKey.value = "";
     formName.value = "";
-    showToast(t("dashboard.toast.addOk", { name }));
     await loadData();
   } catch (e) {
     showToast(t("dashboard.toast.addFail", { err: (e as Error).message || String(e) }));
   } finally {
     adding.value = false;
   }
+}
+
+function addCustomKeyRow(): void {
+  customKeys.value.push({ name: "", key: "" });
 }
 
 async function removeAccount(accId: number, accName: string): Promise<void> {
@@ -218,7 +252,12 @@ onMounted(async () => {
     </div>
 
     <div class="panel">
-      <h3>{{ t("dashboard.addAccount") }}</h3>
+      <div class="panel-head">
+        <h3>{{ t("dashboard.addAccount") }}</h3>
+        <button class="btn small" @click="showCustomManager = true">
+          {{ t("dashboard.customApi.manage") }}
+        </button>
+      </div>
       <div class="form-row">
         <select v-model="formProvider" class="input select">
           <option v-for="p in providers" :key="p.id" :value="p.id">
@@ -226,7 +265,35 @@ onMounted(async () => {
           </option>
         </select>
         <input v-model="formName" class="input" :placeholder="t('dashboard.accountName')" />
+        <template v-if="isCustomProvider()">
+          <div class="key-rows">
+            <div v-for="(row, i) in customKeys" :key="i" class="key-row">
+              <input
+                v-model="row.name"
+                class="input key-name"
+                :placeholder="t('dashboard.customApi.keyNamePlaceholder')"
+              />
+              <input
+                v-model="row.key"
+                class="input key"
+                type="password"
+                :placeholder="t('dashboard.customApi.keyPlaceholder')"
+              />
+              <button
+                v-if="customKeys.length > 1"
+                class="btn small danger"
+                @click="customKeys.splice(i, 1)"
+              >
+                ×
+              </button>
+            </div>
+            <button class="btn small" @click="addCustomKeyRow">
+              + {{ t("dashboard.customApi.addKey") }}
+            </button>
+          </div>
+        </template>
         <input
+          v-else
           v-model="formKey"
           class="input key"
           type="password"
@@ -236,7 +303,10 @@ onMounted(async () => {
           {{ adding ? t("dashboard.adding") : t("dashboard.add") }}
         </button>
       </div>
-      <p v-if="!getProvider(formProvider)?.balanceSupported" class="hint">
+      <p v-if="isCustomProvider()" class="hint">
+        {{ t("dashboard.customApi.multiKeyHint") }}
+      </p>
+      <p v-else-if="!getProvider(formProvider)?.balanceSupported" class="hint">
         {{ t("dashboard.manualHint") }}
       </p>
     </div>
@@ -313,6 +383,8 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+
+    <CustomApiManager :open="showCustomManager" @close="showCustomManager = false" />
   </div>
 </template>
 
@@ -356,6 +428,32 @@ onMounted(async () => {
   margin: 0 0 12px;
   font-size: 14px;
   color: var(--c-text-secondary);
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.panel-head h3 {
+  margin-bottom: 12px;
+}
+
+.key-rows {
+  flex: 1;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.key-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.key-name {
+  width: 150px;
+  flex-shrink: 0;
 }
 
 .form-row {
