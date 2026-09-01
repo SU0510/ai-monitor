@@ -78,6 +78,7 @@ pub fn run() {
             commands::set_tray_status,
             commands::export_usage_csv,
             commands::http_get_json,
+            commands::http_request,
             commands::http_post_json,
             commands::http_get_text,
             commands::quit_app,

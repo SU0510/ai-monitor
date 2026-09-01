@@ -94,6 +94,45 @@ pub async fn http_get_json(
     serde_json::from_str(&body).map_err(|e| format!("JSON 解析失败: {e}"))
 }
 
+/// 通用 HTTP 请求（任意 method / headers / body），用于自定义余额查询 API。
+/// 可选 body 仅对带请求体的方法生效；响应统一按 JSON 解析。
+#[tauri::command]
+pub async fn http_request(
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("ai-monitor/0.1.0")
+        .build()
+        .map_err(|e| format!("HTTP 客户端初始化失败: {e}"))?;
+
+    let m = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|e| format!("不支持的方法 {method}: {e}"))?;
+
+    let mut req = client.request(m, &url);
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+    if let Some(b) = body {
+        req = req.json(&b);
+    }
+
+    let resp = req.send().await.map_err(|e| {
+        eprintln!("[http_request] 请求失败 method={method} url={url} err={e}");
+        format!("请求失败: {e}")
+    })?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    if !status.is_success() {
+        eprintln!("[http_request] HTTP {status} method={method} url={url} body={text}");
+        return Err(format!("HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("JSON 解析失败: {e}"))
+}
+
 /// 退出应用
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
