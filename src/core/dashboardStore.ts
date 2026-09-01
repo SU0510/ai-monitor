@@ -10,6 +10,7 @@ import {
   type AccountRow,
 } from "../core/db";
 import { collectAll } from "../core/collector";
+import { syncCustomProviders } from "../providers";
 
 /**
  * Dashboard 共享数据存储（单例）
@@ -69,6 +70,7 @@ function displayCost(cost: number, costEstimated: number): number {
 
 export async function ensureData(): Promise<void> {
   await initDb();
+  await syncCustomProviders();
   await loadData();
 }
 
