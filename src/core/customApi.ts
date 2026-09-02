@@ -22,6 +22,8 @@ export interface FieldRule {
   operand?: number;
   /** subtract 时减数从另一个字段取值，如 "info.spend" */
   operandSource?: string;
+  /** 结果下限（如 remaining 不可为负，取 Math.max(clampMin, v)） */
+  clampMin?: number;
 }
 
 export interface CustomApiConfig {
@@ -45,20 +47,32 @@ export interface CustomApiConfig {
   };
   /** 是否自动注入 Authorization: Bearer <key> */
   bearerAuth: boolean;
+  /** 封禁/无效判定字段路径（为真则视为无效），如 "info.blocked" */
+  invalidPath?: string;
+  /** 封禁时的提示文案 */
+  invalidMessage?: string;
 }
 
 const CONFIG_STORAGE_KEY = "custom_api_configs";
 
 export function newConfigId(): string {
-  return crypto.randomUUID();
+  // 自生成随机 id，避免在非 secure context 下 crypto.randomUUID 不可用
+  return (
+    Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10)
+  );
 }
 
-/** LiteLLM `/key/info` 一键预设：remaining = max_budget - spend */
+/**
+ * LiteLLM `/key/info` 默认模板：
+ *   total = info.max_budget, used = info.spend, remaining = max(0, total - used)
+ *   unit = USD, isValid = !info.blocked
+ * 用户一般只需填 name/baseUrl 与 key。
+ */
 export function litellmPreset(): CustomApiConfig {
   return {
     id: newConfigId(),
     name: "LiteLLM",
-    baseUrl: "https://your-gateway.example.com",
+    baseUrl: "",
     path: "/key/info",
     method: "GET",
     headers: {},
@@ -69,12 +83,15 @@ export function litellmPreset(): CustomApiConfig {
         source: "info.max_budget",
         transform: "subtract",
         operandSource: "info.spend",
+        clampMin: 0,
       },
       available: { source: "info.max_budget", transform: "none" },
-      granted: { source: "info.max_budget", transform: "none" },
+      granted: { source: "info.spend", transform: "none" },
       currency: { source: "info.currency", transform: "none" },
     },
     bearerAuth: true,
+    invalidPath: "info.blocked",
+    invalidMessage: "API Key 已被封禁",
   };
 }
 
@@ -151,11 +168,23 @@ function extractField(resp: unknown, rule: FieldRule | undefined): number | stri
   }
 }
 
+/** 对提取结果应用下限约束（remaining >= clampMin） */
+function applyClamp(v: number | undefined, rule: FieldRule | undefined): number | undefined {
+  if (v === undefined) return v;
+  if (rule?.clampMin !== undefined) return Math.max(rule.clampMin, v);
+  return v;
+}
+
 // ---------------- 请求与解析 ----------------
 
 function buildUrl(cfg: CustomApiConfig): string {
   const base = cfg.baseUrl.replace(/\/+$/, "");
   const path = cfg.path.startsWith("/") ? cfg.path : `/${cfg.path}`;
+  // 避免用户已把完整路径（含 path）填进 baseUrl 时重复拼接
+  if (path && base.endsWith(path)) {
+    const qs = new URLSearchParams(cfg.query).toString();
+    return qs ? `${base}?${qs}` : base;
+  }
   const qs = new URLSearchParams(cfg.query).toString();
   return qs ? `${base}${path}?${qs}` : `${base}${path}`;
 }
@@ -163,7 +192,7 @@ function buildUrl(cfg: CustomApiConfig): string {
 function buildHeaders(cfg: CustomApiConfig, apiKey: string): Array<[string, string]> {
   const map: Record<string, string> = {};
   for (const [k, v] of Object.entries(cfg.headers)) {
-    map[k] = v.replace(/\{\{\s*key\s*\}\}/g, apiKey);
+    map[k] = v.replace(/\{\{\s*(?:key|apiKey)\s*\}\}/g, apiKey);
   }
   if (cfg.bearerAuth && apiKey) {
     map.Authorization = `Bearer ${apiKey}`;
@@ -202,17 +231,25 @@ export async function requestCustomBalance(
     body: bodyValue ?? null,
   });
 
-  const balance = toNumber(extractField(resp, cfg.fields.balance));
+  // 封禁判定
+  if (cfg.invalidPath && getByPath(resp, cfg.invalidPath)) {
+    throw new Error(cfg.invalidMessage ?? "账户无效或已被封禁");
+  }
+
+  const balance = applyClamp(
+    toNumber(extractField(resp, cfg.fields.balance)),
+    cfg.fields.balance
+  );
   if (balance === undefined) {
     throw new Error(
       `无法从响应提取余额字段（路径：${cfg.fields.balance?.source ?? "(未配置)"}）`
     );
   }
 
-  const available = toNumber(extractField(resp, cfg.fields.available));
-  const granted = toNumber(extractField(resp, cfg.fields.granted));
+  const available = applyClamp(toNumber(extractField(resp, cfg.fields.available)), cfg.fields.available);
+  const granted = applyClamp(toNumber(extractField(resp, cfg.fields.granted)), cfg.fields.granted);
   const currencyRaw = extractField(resp, cfg.fields.currency);
-  const currency = typeof currencyRaw === "string" ? currencyRaw : "CNY";
+  const currency = typeof currencyRaw === "string" && currencyRaw !== "" ? currencyRaw : "USD";
 
   return {
     info: {

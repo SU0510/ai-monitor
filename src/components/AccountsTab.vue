@@ -9,10 +9,15 @@ import {
   deleteAccount as dbDeleteAccount,
 } from "../core/db";
 import { collectAccount, deleteAccountAndSecret } from "../core/collector";
-import { providers, getProvider } from "../providers";
+import { providers, getProvider, upsertCustomConfig } from "../providers";
 import { CUSTOM_PREFIX } from "../providers/custom";
+import {
+  litellmPreset,
+  requestCustomBalance,
+  type CustomApiConfig,
+  type FieldRule,
+} from "../core/customApi";
 import BalanceChart from "./BalanceChart.vue";
-import CustomApiManager from "./CustomApiManager.vue";
 import { i18n } from "../i18n";
 import {
   accounts,
@@ -21,6 +26,7 @@ import {
   totalBalance,
   fmt,
   displayCost,
+  ensureData,
   loadData,
   showToast,
 } from "../core/dashboardStore";
@@ -35,13 +41,151 @@ const formProvider = ref("deepseek");
 const formName = ref("");
 const formKey = ref("");
 const adding = ref(false);
-const showCustomManager = ref(false);
 
 // 自定义 API 多 key 输入：一把 key 对应一个账户
 const customKeys = ref<{ name: string; key: string }[]>([{ name: "", key: "" }]);
 
-function isCustomProvider(): boolean {
-  return formProvider.value.startsWith(CUSTOM_PREFIX);
+// 下拉框里「自定义 API」固定项（选中后内联展开配置）
+const CUSTOM_API_OPTION = "__custom_api__";
+
+// 内联配置表单
+const customDraft = ref<CustomApiConfig | null>(null);
+const headersText = ref("");
+const queryText = ref("");
+const advancedOpen = ref(false);
+const testKey = ref("");
+const testing = ref(false);
+const testRaw = ref("");
+const testResult = ref("");
+
+function onProviderChange(): void {
+  if (formProvider.value === CUSTOM_API_OPTION) {
+    customDraft.value = newEmptyConfig();
+    headersText.value = "";
+    queryText.value = "";
+    advancedOpen.value = false;
+  } else {
+    customDraft.value = null;
+  }
+}
+
+function newEmptyConfig(): CustomApiConfig {
+  // 默认即 LiteLLM `/key/info` 模板：用户一般只需填 baseUrl 与 key
+  return { ...litellmPreset(), name: "" };
+}
+
+function loadPreset(): void {
+  if (!customDraft.value) return;
+  const preset = litellmPreset();
+  customDraft.value = { ...preset, id: customDraft.value.id, name: customDraft.value.name };
+  headersText.value = "";
+  queryText.value = "";
+  showToast(t("dashboard.customApi.presetLoaded"));
+}
+
+function parsePairs(text: string, sep: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const s = line.trim();
+    if (!s) continue;
+    const idx = s.indexOf(sep);
+    if (idx <= 0) continue;
+    const k = s.slice(0, idx).trim();
+    const v = s.slice(idx + 1).trim();
+    if (k) out[k] = v;
+  }
+  return out;
+}
+
+function setDraftRule(field: keyof CustomApiConfig["fields"], patch: Partial<FieldRule>): void {
+  if (!customDraft.value) return;
+  const cur = customDraft.value.fields[field] ?? { source: "", transform: "none" };
+  customDraft.value.fields[field] = { ...cur, ...patch };
+}
+
+// 模板内不能使用 TS 类型断言，故事件处理放脚本里、模板只传引用
+const fieldKeys: Array<keyof CustomApiConfig["fields"]> = ["available", "granted", "currency"];
+
+function fieldUpdate<K extends keyof CustomApiConfig["fields"]>(
+  field: K,
+  kind: "source" | "transform",
+  e: Event
+): void {
+  const el = e.target as HTMLInputElement;
+  if (kind === "source") setDraftRule(field, { source: el.value });
+  else setDraftRule(field, { transform: el.value as FieldRule["transform"] });
+}
+
+function updateBalanceOperand(e: Event): void {
+  const v = parseFloat((e.target as HTMLInputElement).value);
+  setDraftRule("balance", { operand: Number.isFinite(v) ? v : undefined });
+}
+
+function updateBalanceOperandSource(e: Event): void {
+  setDraftRule("balance", { operandSource: (e.target as HTMLInputElement).value });
+}
+
+async function runTest(): Promise<void> {
+  if (!customDraft.value) return;
+  const key = testKey.value.trim() || customKeys.value.map((r) => r.key.trim()).find(Boolean) || "";
+  if (!key) {
+    showToast(t("dashboard.toast.apiKeyRequired"));
+    return;
+  }
+  testing.value = true;
+  testRaw.value = "";
+  testResult.value = "";
+  try {
+    // 用当前草稿（含 headers/query 行文本）做一次真实请求
+    const cfg: CustomApiConfig = {
+      ...customDraft.value,
+      headers: parsePairs(headersText.value, ":"),
+      query: parsePairs(queryText.value, "="),
+    };
+    const { info, raw } = await requestCustomBalance(cfg, key);
+    testRaw.value = JSON.stringify(raw, null, 2);
+    testResult.value = JSON.stringify(info, null, 2);
+  } catch (e) {
+    testRaw.value = (e as Error).message || String(e);
+    testResult.value = "";
+  } finally {
+    testing.value = false;
+  }
+}
+
+async function saveCustomConfig(): Promise<void> {
+  if (!customDraft.value) return;
+  const cfg = customDraft.value;
+  if (!cfg.name.trim()) {
+    cfg.name = "LiteLLM";
+  }
+  if (!cfg.baseUrl.trim()) {
+    showToast(t("dashboard.customApi.baseUrl") + " required");
+    return;
+  }
+  if (!cfg.fields.balance?.source.trim()) {
+    showToast(t("dashboard.customApi.fieldBalance") + " required");
+    return;
+  }
+  cfg.headers = parsePairs(headersText.value, ":");
+  cfg.query = parsePairs(queryText.value, "=");
+  await upsertCustomConfig(cfg);
+  const newProviderId = `${CUSTOM_PREFIX}${cfg.id}`;
+
+  // 用填写的多把 key 建账户
+  const rows = customKeys.value.filter((r) => r.key.trim());
+  const baseName = formName.value.trim() || cfg.name;
+  for (const row of rows) {
+    const accName = row.name.trim() || `${baseName} ${customKeys.value.indexOf(row) + 1}`;
+    await addSingleAccount(newProviderId, accName, row.key.trim());
+  }
+
+  formProvider.value = newProviderId;
+  customDraft.value = null;
+  customKeys.value = [{ name: "", key: "" }];
+  formName.value = "";
+  await loadData();
+  showToast(rows.length > 0 ? t("dashboard.toast.addOk", { name: baseName }) : t("dashboard.toast.customApiSaved"));
 }
 
 async function addSingleAccount(providerId: string, name: string, key: string): Promise<void> {
@@ -63,32 +207,19 @@ async function addAccount(): Promise<void> {
   const providerId = formProvider.value;
   const provider = getProvider(providerId);
   const name = formName.value.trim() || provider?.name || providerId;
+  const key = formKey.value.trim();
+
+  if (!key) {
+    showToast(t("dashboard.toast.apiKeyRequired"));
+    return;
+  }
 
   adding.value = true;
   try {
-    if (isCustomProvider()) {
-      const rows = customKeys.value.filter((r) => r.key.trim());
-      if (rows.length === 0) {
-        showToast(t("dashboard.toast.apiKeyRequired"));
-        return;
-      }
-      for (const row of rows) {
-        const accName = row.name.trim() || `${name} ${customKeys.value.indexOf(row) + 1}`;
-        await addSingleAccount(providerId, accName, row.key.trim());
-      }
-      customKeys.value = [{ name: "", key: "" }];
-      showToast(t("dashboard.toast.addOk", { name }));
-    } else {
-      const key = formKey.value.trim();
-      if (!key) {
-        showToast(t("dashboard.toast.apiKeyRequired"));
-        return;
-      }
-      await addSingleAccount(providerId, name, key);
-      formKey.value = "";
-      showToast(t("dashboard.toast.addOk", { name }));
-    }
+    await addSingleAccount(providerId, name, key);
+    formKey.value = "";
     formName.value = "";
+    showToast(t("dashboard.toast.addOk", { name }));
     await loadData();
   } catch (e) {
     showToast(t("dashboard.toast.addFail", { err: (e as Error).message || String(e) }));
@@ -99,6 +230,12 @@ async function addAccount(): Promise<void> {
 
 function addCustomKeyRow(): void {
   customKeys.value.push({ name: "", key: "" });
+}
+
+function cancelCustomForm(): void {
+  formProvider.value = "deepseek";
+  customDraft.value = null;
+  customKeys.value = [{ name: "", key: "" }];
 }
 
 async function removeAccount(accId: number, accName: string): Promise<void> {
@@ -176,6 +313,7 @@ function trendEnd(): string | undefined {
 }
 
 onMounted(async () => {
+  await ensureData();
   const rawThreshold = await getSetting("low_balance_threshold");
   if (rawThreshold) lowThreshold.value = parseInt(rawThreshold, 10) || 20;
   // 默认账户与自定义日期范围
@@ -252,63 +390,179 @@ onMounted(async () => {
     </div>
 
     <div class="panel">
-      <div class="panel-head">
-        <h3>{{ t("dashboard.addAccount") }}</h3>
-        <button class="btn small" @click="showCustomManager = true">
-          {{ t("dashboard.customApi.manage") }}
-        </button>
-      </div>
+      <h3>{{ t("dashboard.addAccount") }}</h3>
       <div class="form-row">
-        <select v-model="formProvider" class="input select">
+        <select v-model="formProvider" class="input select" @change="onProviderChange">
+          <option :value="CUSTOM_API_OPTION">{{ t("dashboard.customApi.title") }}</option>
           <option v-for="p in providers" :key="p.id" :value="p.id">
             {{ p.name }}{{ p.balanceSupported ? "" : "（" + t("dashboard.registerBalance") + "）" }}
           </option>
         </select>
-        <input v-model="formName" class="input" :placeholder="t('dashboard.accountName')" />
-        <template v-if="isCustomProvider()">
-          <div class="key-rows">
-            <div v-for="(row, i) in customKeys" :key="i" class="key-row">
-              <input
-                v-model="row.name"
-                class="input key-name"
-                :placeholder="t('dashboard.customApi.keyNamePlaceholder')"
-              />
-              <input
-                v-model="row.key"
-                class="input key"
-                type="password"
-                :placeholder="t('dashboard.customApi.keyPlaceholder')"
-              />
-              <button
-                v-if="customKeys.length > 1"
-                class="btn small danger"
-                @click="customKeys.splice(i, 1)"
-              >
-                ×
-              </button>
-            </div>
-            <button class="btn small" @click="addCustomKeyRow">
-              + {{ t("dashboard.customApi.addKey") }}
-            </button>
-          </div>
+        <template v-if="formProvider !== CUSTOM_API_OPTION">
+          <input v-model="formName" class="input" :placeholder="t('dashboard.accountName')" />
+          <input
+            v-model="formKey"
+            class="input key"
+            type="password"
+            :placeholder="t('dashboard.apiKey')"
+          />
+          <button class="btn primary" :disabled="adding" @click="addAccount">
+            {{ adding ? t("dashboard.adding") : t("dashboard.add") }}
+          </button>
         </template>
-        <input
-          v-else
-          v-model="formKey"
-          class="input key"
-          type="password"
-          :placeholder="t('dashboard.apiKey')"
-        />
-        <button class="btn primary" :disabled="adding" @click="addAccount">
-          {{ adding ? t("dashboard.adding") : t("dashboard.add") }}
-        </button>
       </div>
-      <p v-if="isCustomProvider()" class="hint">
-        {{ t("dashboard.customApi.multiKeyHint") }}
-      </p>
-      <p v-else-if="!getProvider(formProvider)?.balanceSupported" class="hint">
+      <p v-if="formProvider !== CUSTOM_API_OPTION && !getProvider(formProvider)?.balanceSupported" class="hint">
         {{ t("dashboard.manualHint") }}
       </p>
+
+      <!-- 自定义 API：内联配置 -->
+      <div v-if="formProvider === CUSTOM_API_OPTION && customDraft" class="custom-form">
+        <div class="field-grid">
+          <label class="field grow">
+            <span>{{ t("dashboard.customApi.baseUrl") }}</span>
+            <input v-model="customDraft.baseUrl" class="input" :placeholder="t('dashboard.customApi.baseUrlPlaceholder')" />
+          </label>
+          <label class="field">
+            <span>{{ t("dashboard.customApi.name") }}</span>
+            <input v-model="customDraft.name" class="input" :placeholder="t('dashboard.customApi.namePlaceholder')" />
+          </label>
+        </div>
+        <p class="hint">{{ t("dashboard.customApi.defaultTemplateHint") }}</p>
+
+        <div class="field-sep">
+          <span class="sec-title">{{ t("dashboard.apiKey") }}</span>
+          <button class="btn small" @click="addCustomKeyRow">+ {{ t("dashboard.customApi.addKey") }}</button>
+        </div>
+        <div class="key-rows">
+          <div v-for="(row, i) in customKeys" :key="i" class="key-row">
+            <input v-model="row.name" class="input key-name" :placeholder="t('dashboard.customApi.keyNamePlaceholder')" />
+            <input v-model="row.key" class="input key" type="password" :placeholder="t('dashboard.customApi.keyPlaceholder')" />
+            <button v-if="customKeys.length > 1" class="btn small danger" @click="customKeys.splice(i, 1)">×</button>
+          </div>
+        </div>
+        <p class="hint">{{ t("dashboard.customApi.multiKeyHint") }}</p>
+
+        <div class="test-block">
+          <div class="form-row">
+            <input v-model="testKey" class="input key" type="password" :placeholder="t('dashboard.customApi.testKey')" />
+            <button class="btn small" :disabled="testing" @click="runTest">
+              {{ testing ? t("dashboard.adding") : t("dashboard.customApi.testRun") }}
+            </button>
+          </div>
+          <div v-if="testRaw" class="test-out">
+            <div class="test-label">{{ t("dashboard.customApi.testRaw") }}</div>
+            <pre class="mono">{{ testRaw }}</pre>
+          </div>
+          <div v-if="testResult" class="test-out">
+            <div class="test-label">{{ t("dashboard.customApi.testResult") }}</div>
+            <pre class="mono">{{ testResult }}</pre>
+          </div>
+        </div>
+
+        <button class="btn small ghost toggle" @click="advancedOpen = !advancedOpen">
+          {{ advancedOpen ? "▾" : "▸" }} {{ t("dashboard.customApi.advanced") }}
+        </button>
+
+        <div v-if="advancedOpen" class="advanced">
+          <div class="field-grid">
+            <label class="field">
+              <span>{{ t("dashboard.customApi.method") }}</span>
+              <select v-model="customDraft.method" class="input select">
+                <option v-for="m in ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']" :key="m" :value="m">{{ m }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>{{ t("dashboard.customApi.path") }}</span>
+              <input v-model="customDraft.path" class="input" :placeholder="t('dashboard.customApi.pathPlaceholder')" />
+            </label>
+          </div>
+
+          <label class="check-row">
+            <input v-model="customDraft.bearerAuth" type="checkbox" />
+            <span>{{ t("dashboard.customApi.bearerAuth") }}</span>
+          </label>
+
+          <div class="field">
+            <span>{{ t("dashboard.customApi.headers") }}</span>
+            <textarea v-model="headersText" class="input mono" rows="2" :placeholder="t('dashboard.customApi.headersHint')"></textarea>
+          </div>
+          <div class="field">
+            <span>{{ t("dashboard.customApi.query") }}</span>
+            <textarea v-model="queryText" class="input mono" rows="2" :placeholder="t('dashboard.customApi.queryHint')"></textarea>
+          </div>
+          <div class="field">
+            <span>{{ t("dashboard.customApi.body") }}</span>
+            <textarea v-model="customDraft.body" class="input mono" rows="3" :placeholder="t('dashboard.customApi.bodyHint')"></textarea>
+          </div>
+
+          <div class="field-sep">
+            <span class="sec-title">{{ t("dashboard.customApi.fields") }}</span>
+            <button class="btn small" @click="loadPreset">{{ t("dashboard.customApi.preset") }}</button>
+          </div>
+          <p class="hint">{{ t("dashboard.customApi.fieldsHint") }}</p>
+
+          <div class="rule-row">
+            <span class="rule-label">{{ t("dashboard.customApi.fieldBalance") }}</span>
+            <input
+              class="input mono grow"
+              :value="customDraft.fields.balance?.source ?? ''"
+              :placeholder="t('dashboard.customApi.source')"
+              @input="fieldUpdate('balance', 'source', $event)"
+            />
+            <select
+              class="input select"
+              :value="customDraft.fields.balance?.transform ?? 'none'"
+              @change="fieldUpdate('balance', 'transform', $event)"
+            >
+              <option value="none">{{ t("dashboard.customApi.transformNone") }}</option>
+              <option value="subtract">{{ t("dashboard.customApi.transformSubtract") }}</option>
+              <option value="divide">{{ t("dashboard.customApi.transformDivide") }}</option>
+              <option value="multiply">{{ t("dashboard.customApi.transformMultiply") }}</option>
+            </select>
+            <input
+              v-if="customDraft.fields.balance?.transform === 'divide' || customDraft.fields.balance?.transform === 'multiply'"
+              class="input num"
+              type="number"
+              step="any"
+              :placeholder="t('dashboard.customApi.operand')"
+              :value="customDraft.fields.balance?.operand ?? ''"
+              @input="updateBalanceOperand"
+            />
+            <input
+              v-if="customDraft.fields.balance?.transform === 'subtract'"
+              class="input mono"
+              :placeholder="t('dashboard.customApi.operandSource')"
+              :value="customDraft.fields.balance?.operandSource ?? ''"
+              @input="updateBalanceOperandSource"
+            />
+          </div>
+
+          <div v-for="f in fieldKeys" :key="f" class="rule-row">
+            <span class="rule-label">{{ t(`dashboard.customApi.${f === 'available' ? 'fieldAvailable' : f === 'granted' ? 'fieldGranted' : 'fieldCurrency'}`) }}</span>
+            <input
+              class="input mono grow"
+              :value="customDraft.fields[f]?.source ?? ''"
+              :placeholder="t('dashboard.customApi.source')"
+              @input="fieldUpdate(f, 'source', $event)"
+            />
+            <select
+              class="input select"
+              :value="customDraft.fields[f]?.transform ?? 'none'"
+              @change="fieldUpdate(f, 'transform', $event)"
+            >
+              <option value="none">{{ t("dashboard.customApi.transformNone") }}</option>
+              <option value="subtract">{{ t("dashboard.customApi.transformSubtract") }}</option>
+              <option value="divide">{{ t("dashboard.customApi.transformDivide") }}</option>
+              <option value="multiply">{{ t("dashboard.customApi.transformMultiply") }}</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn ghost" @click="cancelCustomForm">{{ t("dashboard.cancel") }}</button>
+          <button class="btn primary" :disabled="adding" @click="saveCustomConfig">{{ t("dashboard.customApi.save") }}</button>
+        </div>
+      </div>
     </div>
 
     <div class="panel">
@@ -384,7 +638,6 @@ onMounted(async () => {
       </div>
     </div>
 
-    <CustomApiManager :open="showCustomManager" @close="showCustomManager = false" />
   </div>
 </template>
 
@@ -454,6 +707,116 @@ onMounted(async () => {
 .key-name {
   width: 150px;
   flex-shrink: 0;
+}
+
+.custom-form {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--c-border);
+}
+.toggle {
+  margin-bottom: 10px;
+}
+.test-block {
+  margin: 4px 0 12px;
+}
+.test-out {
+  margin-bottom: 10px;
+}
+.test-label {
+  color: var(--c-text-dim);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.test-out pre {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  color: #d1d5db;
+  overflow-x: auto;
+  max-height: 220px;
+  white-space: pre;
+  margin: 0;
+}
+.advanced {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--c-border);
+}
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.field > span {
+  color: var(--c-text-dim);
+  font-size: 12px;
+}
+.field.grow {
+  grid-column: 1 / -1;
+}
+.input.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.input.grow {
+  flex: 1;
+  min-width: 0;
+}
+.input.num {
+  width: 110px;
+}
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--c-text);
+  cursor: pointer;
+}
+.field-sep {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.sec-title {
+  font-weight: 600;
+  color: var(--c-text-secondary);
+  font-size: 13px;
+}
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.rule-label {
+  width: 150px;
+  flex-shrink: 0;
+  color: var(--c-text-dim);
+  font-size: 12px;
+  text-align: right;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.btn.ghost {
+  background: transparent;
 }
 
 .form-row {
