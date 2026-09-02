@@ -727,12 +727,10 @@ async fn record_usage_to_db(st: &ProxyState, provider: &str, api_key: &str, mode
     .unwrap_or_default();
     if !api_key.is_empty() {
         for acc_id in acc_ids {
-            if let Ok(entry) = keyring::Entry::new("ai-monitor", &acc_id.to_string()) {
-                if let Ok(stored) = entry.get_password() {
-                    if stored == api_key {
-                        account_id = Some(acc_id);
-                        break;
-                    }
+            if let Some(stored) = crate::secret::get_plain_for_compare(&st.app_handle, &acc_id.to_string()).await {
+                if stored == api_key {
+                    account_id = Some(acc_id);
+                    break;
                 }
             }
         }

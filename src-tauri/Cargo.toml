@@ -27,7 +27,8 @@ tauri-plugin-autostart = "2.5.1"
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
-keyring = { version = "3", features = ["apple-native"] }
+aes-gcm = "0.10"
+base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
@@ -35,3 +36,6 @@ sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["net", "time"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication"] }

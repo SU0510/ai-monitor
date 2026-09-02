@@ -1,34 +1,24 @@
-use keyring::Entry;
 use tauri::Manager;
 
-const KEYRING_SERVICE: &str = "ai-monitor";
-
-fn keyring_entry(account: &str) -> Entry {
-    Entry::new(KEYRING_SERVICE, account).expect("failed to create keyring entry")
+/// 保存 API Key 到本地加密存储（AES-256-GCM，存于应用数据目录 SQLite）
+#[tauri::command]
+pub async fn save_secret(app: tauri::AppHandle, account: String, secret: String) -> Result<(), String> {
+    crate::secret::set(&app, &account, &secret).await
 }
 
-/// 保存 API Key 到系统钥匙串（macOS Keychain / Windows DPAPI）
+/// 从本地加密存储读取 API Key
 #[tauri::command]
-pub fn save_secret(account: String, secret: String) -> Result<(), String> {
-    keyring_entry(&account)
-        .set_password(&secret)
-        .map_err(|e| format!("保存密钥失败: {e}"))
+pub async fn get_secret(app: tauri::AppHandle, account: String) -> Result<String, String> {
+    match crate::secret::get(&app, &account).await? {
+        Some(v) => Ok(v),
+        None => Err("读取密钥失败: 密钥不存在".to_string()),
+    }
 }
 
-/// 从系统钥匙串读取 API Key
+/// 删除本地加密存储中的 API Key
 #[tauri::command]
-pub fn get_secret(account: String) -> Result<String, String> {
-    keyring_entry(&account)
-        .get_password()
-        .map_err(|e| format!("读取密钥失败: {e}"))
-}
-
-/// 删除系统钥匙串中的 API Key
-#[tauri::command]
-pub fn delete_secret(account: String) -> Result<(), String> {
-    keyring_entry(&account)
-        .delete_credential()
-        .map_err(|e| format!("删除密钥失败: {e}"))
+pub async fn delete_secret(app: tauri::AppHandle, account: String) -> Result<(), String> {
+    crate::secret::remove(&app, &account).await
 }
 
 /// 显示指定窗口

@@ -1,9 +1,24 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod commands;
 mod proxy;
+mod secret;
 mod tray;
 
 use tauri::{Manager, WindowEvent};
+
+/// 让 macOS 应用作为「Agent」运行：不占用 Dock（程序坞），仅存在于菜单栏/灵动岛。
+#[cfg(target_os = "macos")]
+fn hide_from_dock() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    if let Some(mtm) = MainThreadMarker::new() {
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hide_from_dock() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,6 +37,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            hide_from_dock();
+
+            // 初始化本地加密密钥存储（替代系统钥匙串，避免未签名 app 反复弹授权框）
+            tauri::async_runtime::block_on(secret::init(app.handle()))?;
+
             tray::create_tray(app)?;
 
             // 启动统一代理（本地 HTTP，自动记录 token 用量）
