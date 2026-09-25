@@ -32,12 +32,40 @@ Built with [Tauri 2](https://tauri.app) — **~6MB installer, ~100MB RAM**. Data
 
 ## 📦 Installation / 安装
 
-Download from [Releases](https://github.com/WinterOne-hub/ai-monitor/releases):
+Download from [Releases](https://github.com/SU0510/ai-monitor/releases):
 
-- **macOS** (Apple Silicon): `AI.Monitor_*.dmg` → open (right-click → Open if unsigned)
+- **macOS** (Apple Silicon / arm64): `AI.Monitor_*_aarch64.dmg` → open, drag to Applications
 - **Windows** 10/11: `AI.Monitor_*.exe` → run installer
 
-Or build from source:
+### ⚠️ macOS: first launch is blocked by Gatekeeper / 首次打开被系统拦截
+
+The macOS build is **ad-hoc signed** (no paid Apple Developer certificate), so the first launch
+shows a warning — this is expected, the app is not damaged.
+
+macOS 15 (Sequoia) and later **removed the old "right-click → Open" bypass**. Use one of:
+
+1. **System Settings** → Privacy & Security → scroll to *Security* → click **Open Anyway**, then
+   confirm. (Takes effect on the next launch attempt.)
+2. **Terminal** (one line, recommended if the dialog says "damaged"):
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/AI Monitor.app"
+   ```
+
+macOS 构建使用 **ad-hoc 签名**（未购买 Apple 开发者证书），首次打开会提示来历不明的开发者或
+「已损坏」——这不是文件损坏，按上面任一方式放行即可。macOS 15 起已取消「右键 → 打开」的旧绕过
+方式，请改用「系统设置 → 隐私与安全性 → 仍要打开」，或执行上面的 `xattr` 命令。
+
+> **v0.2.0 及更早版本：全新安装会启动即崩溃（已在 0.2.1 修复）**
+>
+> 旧版本在 `app_data_dir` 不存在时会以 `unable to open database file` 崩溃（双击无反应）。
+> 若暂时还在用 0.2.0，先手动建好数据目录即可正常启动：
+>
+> ```bash
+> mkdir -p ~/Library/Application\ Support/com.ai-monitor.app
+> ```
+
+Build from source:
 
 ```bash
 # Requirements: Node.js 18+, Rust (stable)
@@ -45,6 +73,11 @@ npm install
 npm run tauri dev      # development
 npm run tauri build    # production bundle
 ```
+
+> Bundle signing is configured via `bundle.macOS.signingIdentity` in `src-tauri/tauri.conf.json`
+> (`"-"` = ad-hoc). To produce a notarized build instead, set the `APPLE_SIGNING_IDENTITY`,
+> `APPLE_CERTIFICATE`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` environment variables —
+> `APPLE_SIGNING_IDENTITY` overrides the config value.
 
 ---
 

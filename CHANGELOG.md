@@ -2,6 +2,31 @@
 
 所有重要变更记录于此文件。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.1] - 2026-09-25
+
+### 新增功能
+- **时间窗口限额（3 小时限额）**：灵动岛展开区与面板账户卡片显示各账户的窗口额度进度条、
+  已用百分比、剩余额度与重置倒计时（<70% 绿 / 70~90% 黄 / ≥90% 红）。
+  数据取自余额接口响应里的窗口额度，目前适配 LiteLLM `/key/info` 的
+  `info.budget_limits` + `info.budget_limits_usage`（如 USTC `api.llm.ustc.edu.cn`），
+  默认展示 `3h` 窗口。展示哪些窗口、额度列表路径与已用金额路径都可以在
+  「自定义 API → 高级设置 → 时间窗口限额」里改（填 `3h, 12h` 可同时展示多个窗口）；
+  响应里没有对应路径时静默不展示限额，不影响原有余额查询。
+- 新增 `quota_snapshots` 表保存额度快照（只取最新值，7 天后自动清理）。
+
+### 修复
+- **全新安装首次启动即崩溃（严重）**：`secret::init` 直接用 sqlx 打开
+  `app_data_dir()/ai-monitor.db`，而 sqlx 的 `create_if_missing` 只建数据库文件、不建父目录。
+  在从未运行过本应用的机器上（`~/Library/Application Support/com.ai-monitor.app/` 不存在），
+  连接会以 `SQLITE_CANTOPEN(14) unable to open database file` 失败，setup 钩子报错后进程
+  直接 abort——表现为双击图标毫无反应。现在先 `create_dir_all` 建好目录再连接。
+- **macOS 发布包未签名**：bundle 里没有 `_CodeSignature`，`spctl` 直接拒绝，Apple Silicon
+  上从 GitHub 下载的包会被 Gatekeeper 当作「已损坏」。现在用
+  `bundle.macOS.signingIdentity = "-"` 做 ad-hoc 签名，并在 CI 增加签名校验（含 dmg 内
+  app 的复检），任一环节没签上就让构建失败。
+- README 的 Releases 链接指向了错误仓库（WinterOne-hub → SU0510），并更新了 macOS 15
+  的首次打开放行说明（macOS 15 起「右键 → 打开」的旧绕过方式已失效）。
+
 ## [0.1.4] - 2026-08-12
 
 ### 新增功能
