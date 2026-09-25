@@ -4,11 +4,32 @@
  * 新增平台 = 在 src/providers/ 下新建一个文件，实现 Provider 接口，
  * 并在 index.ts 中注册即可。无需改动任何其他代码。
  */
+/**
+ * 时间窗口额度（如 LiteLLM `/key/info` 的 `budget_limits`：每 3h / 12h / 24h 一个额度）。
+ * 用于展示「3 小时限额」这类窗口的已用比例与重置时间。
+ */
+export interface QuotaWindow {
+  /** 窗口标识，如 "3h" / "12h" / "24h" */
+  window: string;
+  /** 窗口额度上限 */
+  limit: number;
+  /** 窗口内已用金额 */
+  spent: number;
+  /** 剩余额度（可为负，表示已超额） */
+  remaining: number;
+  /** 已用比例（0~1+，可能超额故不封顶） */
+  ratio: number;
+  /** 窗口重置时间（ISO 字符串，可能带时区偏移） */
+  resetAt?: string;
+}
+
 export interface BalanceInfo {
   balance: number;
   currency: string;
   available?: number;
   granted?: number;
+  /** 该账户的时间窗口额度（可选；不提供则不展示限额） */
+  quotas?: QuotaWindow[];
   raw?: Record<string, unknown>;
 }
 

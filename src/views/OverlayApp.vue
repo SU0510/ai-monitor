@@ -12,6 +12,7 @@ import {
   refreshAll as storeRefreshAll,
   accounts,
   balances,
+  quotas,
   today,
   todayByAccount,
   collecting,
@@ -20,6 +21,7 @@ import {
   fmt,
   displayCost,
 } from "../core/dashboardStore";
+import { primaryQuota, quotaView, type QuotaView } from "../core/quota";
 import { startAutoCollect, EVENT_BALANCE_UPDATED } from "../core/collector";
 import { i18n } from "../i18n";
 
@@ -30,7 +32,7 @@ const isZh = () => i18n.global.locale.value === "zh";
 // 灵动岛三态尺寸（逻辑像素）
 const CAPSULE_W = 320;
 const CAPSULE_H = 64;
-const EXPANDED_H = 240;
+const EXPANDED_H = 262;
 const EDGE_W = 32; // 边缘半圆窗口宽（完全在屏幕内，贴边凸出半圆）
 const EDGE_H = 64;
 const TOP_Y = 48; // 顶部居中的 Y
@@ -63,6 +65,38 @@ function compactTok(n: number): string {
   if (n >= 1000) return (n / 1000).toFixed(1) + "K";
   return String(n);
 }
+
+/** 某账户的窗口额度展示数据（无额度返回 null） */
+function accQuota(accId: number): QuotaView | null {
+  return quotaView(primaryQuota(quotas.value[accId]), balances.value[accId]?.currency ?? "USD");
+}
+
+/** 灵动岛内的限额明细文案：剩余额度（或已超限）+ 重置倒计时 */
+function quotaDetail(q: QuotaView): string {
+  const parts = [q.over ? t("overlay.quotaOver") : t("overlay.quotaLeft", { amount: q.left })];
+  if (q.reset) parts.push(t("overlay.quotaReset", { time: q.reset }));
+  return parts.join(" · ");
+}
+
+/** 展开抽屉的账户行数据（含所属账户的 3 小时限额），一次算好供模板直接取用 */
+const overlayAccounts = computed(() =>
+  accounts.value.map((acc) => {
+    const quota = accQuota(acc.id);
+    return {
+      id: acc.id,
+      name: acc.name,
+      balance: balances.value[acc.id]?.balance ?? null,
+      todayCost: displayCost(
+        todayByAccount.value[acc.id]?.cost ?? 0,
+        todayByAccount.value[acc.id]?.cost_estimated ?? 0
+      ),
+      tokens:
+        (todayByAccount.value[acc.id]?.input_tokens ?? 0) +
+        (todayByAccount.value[acc.id]?.output_tokens ?? 0),
+      quota: quota ? { ...quota, detail: quotaDetail(quota) } : null,
+    };
+  })
+);
 
 function todayLabel(): string {
   const d = new Date();
@@ -467,30 +501,25 @@ onUnmounted(() => {
           {{ t("overlay.empty") }}<br />
           <span>{{ t("overlay.emptyHint") }}</span>
         </div>
-        <div v-for="acc in accounts" v-else :key="acc.id" class="acc-row">
-          <div class="acc-name">{{ acc.name }}</div>
-          <div class="acc-metrics">
-            <span class="m-bal" :style="{ color: statusColor(balances[acc.id]?.balance ?? 0) }">
-              {{ balances[acc.id] ? fmt(balances[acc.id].balance) : "--" }}
-            </span>
-            <span class="m-cost"
-              >-¥{{
-                fmt(
-                  displayCost(
-                    todayByAccount[acc.id]?.cost ?? 0,
-                    todayByAccount[acc.id]?.cost_estimated ?? 0
-                  )
-                )
-              }}</span
-            >
-            <span class="m-tok">
-              {{
-                compactTok(
-                  (todayByAccount[acc.id]?.input_tokens ?? 0) +
-                    (todayByAccount[acc.id]?.output_tokens ?? 0)
-                )
-              }}
-              tok
+        <div v-for="a in overlayAccounts" v-else :key="a.id" class="acc-row">
+          <div class="acc-line">
+            <div class="acc-name">{{ a.name }}</div>
+            <div class="acc-metrics">
+              <span class="m-bal" :style="{ color: statusColor(a.balance ?? 0) }">
+                {{ a.balance !== null ? fmt(a.balance) : "--" }}
+              </span>
+              <span class="m-cost">-¥{{ fmt(a.todayCost) }}</span>
+              <span class="m-tok">{{ compactTok(a.tokens) }} tok</span>
+            </div>
+          </div>
+          <!-- 时间窗口额度（如 USTC LiteLLM 的 3 小时限额） -->
+          <div v-if="a.quota" class="acc-quota">
+            <div class="quota-bar">
+              <i :class="a.quota.level" :style="{ width: a.quota.barPct + '%' }"></i>
+            </div>
+            <span class="quota-text">
+              <b :class="a.quota.level">{{ a.quota.window }}</b>
+              {{ a.quota.pct }}% · {{ a.quota.detail }}
             </span>
           </div>
         </div>
@@ -667,14 +696,19 @@ onUnmounted(() => {
 
 .acc-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 5px 2px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 2px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 .acc-row:last-child {
   border-bottom: none;
+}
+.acc-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 .acc-name {
   overflow: hidden;
@@ -690,6 +724,54 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-shrink: 0;
+}
+
+/* 时间窗口额度（3 小时限额） */
+.acc-quota {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.quota-bar {
+  flex: 1;
+  min-width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.quota-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #34d399;
+  transition: width 0.3s ease;
+}
+.quota-bar > i.warn {
+  background: #fbbf24;
+}
+.quota-bar > i.danger {
+  background: #f87171;
+}
+.quota-text {
+  font-size: 10px;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.quota-text b {
+  font-weight: 700;
+}
+.quota-text b.ok {
+  color: #34d399;
+}
+.quota-text b.warn {
+  color: #fbbf24;
+}
+.quota-text b.danger {
+  color: #f87171;
 }
 .m-bal {
   font-weight: 700;

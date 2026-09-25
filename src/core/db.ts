@@ -71,6 +71,20 @@ CREATE TABLE IF NOT EXISTS usage_events (
   created_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
 
+-- 时间窗口额度快照（如 LiteLLM 每 3h / 12h 的 budget），每次采集覆盖式追加
+CREATE TABLE IF NOT EXISTS quota_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  window TEXT NOT NULL,
+  limit_amount REAL NOT NULL,
+  spent REAL NOT NULL,
+  currency TEXT DEFAULT 'USD',
+  reset_at TEXT,
+  fetched_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_quota_account_window ON quota_snapshots (account_id, window, id);
+
 CREATE TABLE IF NOT EXISTS price_table (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   provider_id TEXT NOT NULL,
@@ -141,6 +155,12 @@ export async function initDb(): Promise<Database> {
   } catch {
     // 迁移失败不阻塞启动
   }
+  // 限额快照只需最新值，清掉 7 天前的历史（占比小于余额快照，无需按天聚合）
+  await db
+    .execute(
+      "DELETE FROM quota_snapshots WHERE fetched_at < datetime('now', 'localtime', '-7 days')"
+    )
+    .catch(() => undefined);
   return db;
 }
 
@@ -172,6 +192,7 @@ export async function deleteAccount(id: number): Promise<void> {
   await d.execute("DELETE FROM accounts WHERE id = $1", [id]);
   await d.execute("DELETE FROM balance_snapshots WHERE account_id = $1", [id]);
   await d.execute("DELETE FROM daily_usage WHERE account_id = $1", [id]);
+  await d.execute("DELETE FROM quota_snapshots WHERE account_id = $1", [id]);
 }
 
 export async function setAccountEnabled(id: number, enabled: boolean): Promise<void> {
@@ -290,6 +311,45 @@ export async function accountTotalEstimatedCost(accountId: number): Promise<numb
     [accountId]
   );
   return rows[0]?.total ?? 0;
+}
+
+// ---------------- quota snapshots（时间窗口额度） ----------------
+
+export interface QuotaRow {
+  account_id: number;
+  window: string;
+  limit_amount: number;
+  spent: number;
+  currency: string;
+  reset_at: string | null;
+  fetched_at: string;
+}
+
+/** 覆盖式写入某账户各窗口的最新额度（每次采集调用） */
+export async function saveQuotaSnapshot(
+  accountId: number,
+  quota: { window: string; limit: number; spent: number; resetAt?: string },
+  currency: string
+): Promise<void> {
+  const d = getDb();
+  await d.execute(
+    `INSERT INTO quota_snapshots (account_id, window, limit_amount, spent, currency, reset_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [accountId, quota.window, quota.limit, quota.spent, currency, quota.resetAt ?? null]
+  );
+}
+
+/** 每个账户每个窗口的最新一条额度快照 */
+export async function latestQuotas(): Promise<QuotaRow[]> {
+  const d = getDb();
+  return d.select<QuotaRow[]>(
+    `SELECT q.account_id, q.window, q.limit_amount, q.spent, q.currency, q.reset_at, q.fetched_at
+     FROM quota_snapshots q
+     INNER JOIN (
+       SELECT account_id, window, MAX(id) AS max_id
+       FROM quota_snapshots GROUP BY account_id, window
+     ) m ON q.id = m.max_id`
+  );
 }
 
 // ---------------- daily usage ----------------

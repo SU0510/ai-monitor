@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { BalanceInfo } from "../providers/types";
+import type { BalanceInfo, QuotaWindow } from "../providers/types";
 import { getSetting, setSetting } from "./db";
 
 /**
@@ -26,6 +26,30 @@ export interface FieldRule {
   clampMin?: number;
 }
 
+/**
+ * 时间窗口额度的提取规则（LiteLLM `/key/info` 形态）。
+ *
+ * 响应里有两块：额度定义列表（窗口名 + 上限 + 重置时间）与各窗口已用金额。
+ * 未配置时使用 LiteLLM 默认路径；响应里没有对应路径则静默不展示限额，
+ * 因此该功能对非 LiteLLM 的自定义 API 无副作用。
+ */
+export interface QuotaConfig {
+  /** 额度列表路径（数组），如 "info.budget_limits" */
+  limitsPath: string;
+  /** 列表项中的窗口名字段，如 "budget_duration" */
+  windowField: string;
+  /** 列表项中的额度上限字段，如 "max_budget" */
+  limitField: string;
+  /** 列表项中的重置时间字段，如 "reset_at" */
+  resetField?: string;
+  /** 各窗口已用金额的路径模板，`{window}` 替换为窗口名 */
+  usagePath: string;
+  /** usagePath 取不到时的兜底：列表项内的已用金额字段名 */
+  spentField?: string;
+  /** 只展示这些窗口（按此顺序）；留空或都不存在时展示全部 */
+  windows?: string[];
+}
+
 export interface CustomApiConfig {
   /** 实例唯一标识，provider id = `custom:<id>` */
   id: string;
@@ -45,12 +69,27 @@ export interface CustomApiConfig {
     granted?: FieldRule;
     currency?: FieldRule;
   };
+  /** 时间窗口额度提取规则（如 3 小时限额）；缺省走 LiteLLM 默认值 */
+  quota?: QuotaConfig;
   /** 是否自动注入 Authorization: Bearer <key> */
   bearerAuth: boolean;
   /** 封禁/无效判定字段路径（为真则视为无效），如 "info.blocked" */
   invalidPath?: string;
   /** 封禁时的提示文案 */
   invalidMessage?: string;
+}
+
+/** LiteLLM `/key/info` 的额度提取默认值：展示 3 小时窗口 */
+export function litellmQuotaDefaults(): QuotaConfig {
+  return {
+    limitsPath: "info.budget_limits",
+    windowField: "budget_duration",
+    limitField: "max_budget",
+    resetField: "reset_at",
+    usagePath: "info.budget_limits_usage.{window}.current_spend",
+    spentField: "current_spend",
+    windows: ["3h"],
+  };
 }
 
 const CONFIG_STORAGE_KEY = "custom_api_configs";
@@ -89,6 +128,7 @@ export function litellmPreset(): CustomApiConfig {
       granted: { source: "info.spend", transform: "none" },
       currency: { source: "info.currency", transform: "none" },
     },
+    quota: litellmQuotaDefaults(),
     bearerAuth: true,
     invalidPath: "info.blocked",
     invalidMessage: "API Key 已被封禁",
@@ -100,7 +140,9 @@ export async function loadCustomConfigs(): Promise<CustomApiConfig[]> {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as CustomApiConfig[];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    // 老配置没有 quota 段：补上 LiteLLM 默认值，使既有账户无需重建即可显示限额
+    return parsed.map((c) => (c.quota ? c : { ...c, quota: litellmQuotaDefaults() }));
   } catch {
     return [];
   }
@@ -173,6 +215,60 @@ function applyClamp(v: number | undefined, rule: FieldRule | undefined): number 
   if (v === undefined) return v;
   if (rule?.clampMin !== undefined) return Math.max(rule.clampMin, v);
   return v;
+}
+
+/**
+ * 从响应里解析时间窗口额度（如 LiteLLM 的 3h / 12h / 24h）。
+ *
+ * 解析不出的窗口会被跳过而非按 0 展示，避免路径写错时显示出假的「已用 0」。
+ * 配置的 windows 全部不存在时退回展示响应里的全部窗口，便于排查配置。
+ */
+export function extractQuotas(resp: unknown, quota?: QuotaConfig): QuotaWindow[] {
+  const q = quota ?? litellmQuotaDefaults();
+  const rawLimits = getByPath(resp, q.limitsPath);
+  if (!Array.isArray(rawLimits)) return [];
+
+  let limits: { window: string; limit: number; resetAt?: string }[] = [];
+  for (const item of rawLimits) {
+    const window = String(getByPath(item, q.windowField) ?? "").trim();
+    const limit = toNumber(getByPath(item, q.limitField));
+    if (!window || limit === undefined || limit <= 0) continue;
+    const resetRaw = q.resetField ? getByPath(item, q.resetField) : undefined;
+    limits.push({
+      window,
+      limit,
+      resetAt: typeof resetRaw === "string" && resetRaw !== "" ? resetRaw : undefined,
+    });
+  }
+
+  if (q.windows && q.windows.length > 0) {
+    const picked = q.windows
+      .map((w) => limits.find((l) => l.window === w))
+      .filter((l): l is { window: string; limit: number; resetAt?: string } => l !== undefined);
+    if (picked.length > 0) limits = picked;
+  }
+
+  const out: QuotaWindow[] = [];
+  for (const l of limits) {
+    const usagePath = q.usagePath.replace(/\{\s*window\s*\}/g, l.window);
+    let spent = toNumber(getByPath(resp, usagePath));
+    if (spent === undefined && q.spentField) {
+      const idx = rawLimits.findIndex(
+        (it) => String(getByPath(it, q.windowField) ?? "").trim() === l.window
+      );
+      if (idx >= 0) spent = toNumber(getByPath(rawLimits[idx], q.spentField));
+    }
+    if (spent === undefined) continue;
+    out.push({
+      window: l.window,
+      limit: l.limit,
+      spent,
+      remaining: l.limit - spent,
+      ratio: spent / l.limit,
+      resetAt: l.resetAt,
+    });
+  }
+  return out;
 }
 
 // ---------------- 请求与解析 ----------------
@@ -250,6 +346,7 @@ export async function requestCustomBalance(
   const granted = applyClamp(toNumber(extractField(resp, cfg.fields.granted)), cfg.fields.granted);
   const currencyRaw = extractField(resp, cfg.fields.currency);
   const currency = typeof currencyRaw === "string" && currencyRaw !== "" ? currencyRaw : "USD";
+  const quotas = extractQuotas(resp, cfg.quota);
 
   return {
     info: {
@@ -257,6 +354,7 @@ export async function requestCustomBalance(
       currency,
       available,
       granted,
+      quotas,
       raw: resp as Record<string, unknown>,
     },
     raw: resp,

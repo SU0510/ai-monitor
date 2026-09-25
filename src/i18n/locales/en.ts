@@ -15,6 +15,9 @@ export default {
     update: "Updated {time}",
     date: "{date}",
     todayCost: "¥{cost}",
+    quotaLeft: "{amount} left",
+    quotaOver: "over limit",
+    quotaReset: "resets in {time}",
   },
   dashboard: {
     title: "AI Monitor",
@@ -57,6 +60,10 @@ export default {
     inputTokens: "Input tokens",
     outputTokens: "Output tokens",
     estimatedCost: "Estimated cost",
+    quotaUsed: "{used} / {limit} used",
+    quotaLeft: "{amount} left",
+    quotaOver: "{amount} over limit",
+    quotaReset: "resets in {time}",
     usageAuto:
       "Tokens are recorded automatically by the proxy; point your calls to 127.0.0.1:8899.",
     recent7: "Last 7 days",
@@ -118,6 +125,12 @@ export default {
       transformSubtract: "Subtract",
       transformDivide: "Divide by",
       transformMultiply: "Multiply by",
+      quotaTitle: "Time-window quota (e.g. 3-hour limit)",
+      quotaHint:
+        "Extracts the quota from the response by JSON path. Defaults target LiteLLM /key/info: limits live in info.budget_limits, used amounts in info.budget_limits_usage. If none of the listed windows exist in the response, every window found is shown instead.",
+      quotaWindows: "Windows (comma separated)",
+      quotaLimitsPath: "Limits path",
+      quotaUsagePath: "Used-amount path ({'{window}'} = window name)",
       preset: "Load LiteLLM preset",
       test: "Test request",
       testKey: "Test API key",

@@ -14,6 +14,7 @@ export function buildCustomProvider(cfg: CustomApiConfig): Provider {
     balanceSupported: true,
     docs: cfg.baseUrl,
 
+    /** 余额与窗口额度（如 3 小时限额）来自同一次请求的响应 */
     async getBalance(apiKey: string): Promise<BalanceInfo> {
       const { info } = await requestCustomBalance(cfg, apiKey);
       return info;

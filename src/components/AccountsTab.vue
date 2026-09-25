@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { computed, ref, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -13,15 +13,19 @@ import { providers, getProvider, upsertCustomConfig } from "../providers";
 import { CUSTOM_PREFIX } from "../providers/custom";
 import {
   litellmPreset,
+  litellmQuotaDefaults,
   requestCustomBalance,
   type CustomApiConfig,
   type FieldRule,
+  type QuotaConfig,
 } from "../core/customApi";
+import { quotaView, windowMinutes, type QuotaView } from "../core/quota";
 import BalanceChart from "./BalanceChart.vue";
 import { i18n } from "../i18n";
 import {
   accounts,
   balances,
+  quotas,
   today,
   totalBalance,
   fmt,
@@ -64,6 +68,7 @@ function onProviderChange(): void {
     headersText.value = "";
     queryText.value = "";
     advancedOpen.value = false;
+    syncQuotaTextFromDraft();
   } else {
     customDraft.value = null;
   }
@@ -80,7 +85,14 @@ function loadPreset(): void {
   customDraft.value = { ...preset, id: customDraft.value.id, name: customDraft.value.name };
   headersText.value = "";
   queryText.value = "";
+  syncQuotaTextFromDraft();
   showToast(t("dashboard.customApi.presetLoaded"));
+}
+
+/** 把配置里的限额窗口数组回填到输入框 */
+function syncQuotaTextFromDraft(): void {
+  const windows = draftQuota().windows ?? [];
+  quotaWindowsText.value = windows.join(", ");
 }
 
 function parsePairs(text: string, sep: string): Record<string, string> {
@@ -114,6 +126,66 @@ function fieldUpdate<K extends keyof CustomApiConfig["fields"]>(
   const el = e.target as HTMLInputElement;
   if (kind === "source") setDraftRule(field, { source: el.value });
   else setDraftRule(field, { transform: el.value as FieldRule["transform"] });
+}
+
+// ---------- 限额（时间窗口额度）----------
+
+/** 草稿里的限额配置；老配置/测试草稿缺省时回退到 LiteLLM 默认值 */
+function draftQuota(): QuotaConfig {
+  return customDraft.value?.quota ?? litellmQuotaDefaults();
+}
+
+function setDraftQuota(patch: Partial<QuotaConfig>): void {
+  if (!customDraft.value) return;
+  customDraft.value.quota = { ...draftQuota(), ...patch };
+}
+
+/** 展示窗口输入框：逗号分隔文本 ↔ 配置数组 */
+const quotaWindowsText = ref("3h");
+
+function onQuotaWindowsInput(e: Event): void {
+  const raw = (e.target as HTMLInputElement).value;
+  quotaWindowsText.value = raw;
+  const list = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  setDraftQuota({ windows: list.length > 0 ? list : [] });
+}
+
+const quotaLimitsPath = computed(() => draftQuota().limitsPath);
+const quotaUsagePath = computed(() => draftQuota().usagePath);
+
+/** 路径输入：留空回退到该字段的 LiteLLM 默认值 */
+function onQuotaPathInput(key: "limitsPath" | "usagePath", e: Event): void {
+  const value = (e.target as HTMLInputElement).value.trim();
+  const fallback = litellmQuotaDefaults();
+  if (key === "limitsPath") setDraftQuota({ limitsPath: value || fallback.limitsPath });
+  else setDraftQuota({ usagePath: value || fallback.usagePath });
+}
+
+/** 账户的限额行（按窗口从短到长，最多展示 2 条，避免卡片过高） */
+function accQuotas(accId: number): QuotaView[] {
+  const list = quotas.value[accId] ?? [];
+  const currency = balances.value[accId]?.currency ?? "USD";
+  return list
+    .slice()
+    .sort((a, b) => windowMinutes(a.window) - windowMinutes(b.window))
+    .slice(0, 2)
+    .map((q) => quotaView(q, currency))
+    .filter((v): v is QuotaView => v !== null);
+}
+
+/** 限额明细文案：已用/上限 · 剩余额度（或已超限） · 重置倒计时 */
+function quotaDetail(q: QuotaView): string {
+  const parts = [
+    t("dashboard.quotaUsed", { used: q.usedText, limit: q.limitText }),
+    q.over
+      ? t("dashboard.quotaOver", { amount: q.overText })
+      : t("dashboard.quotaLeft", { amount: q.left }),
+  ];
+  if (q.reset) parts.push(t("dashboard.quotaReset", { time: q.reset }));
+  return parts.join(" · ");
 }
 
 function updateBalanceOperand(e: Event): void {
@@ -556,6 +628,40 @@ onMounted(async () => {
               <option value="multiply">{{ t("dashboard.customApi.transformMultiply") }}</option>
             </select>
           </div>
+
+          <div class="field-sep">
+            <span class="sec-title">{{ t("dashboard.customApi.quotaTitle") }}</span>
+          </div>
+          <p class="hint">{{ t("dashboard.customApi.quotaHint") }}</p>
+          <div class="field-grid">
+            <label class="field">
+              <span>{{ t("dashboard.customApi.quotaWindows") }}</span>
+              <input
+                class="input"
+                :value="quotaWindowsText"
+                placeholder="3h"
+                @input="onQuotaWindowsInput"
+              />
+            </label>
+            <label class="field">
+              <span>{{ t("dashboard.customApi.quotaLimitsPath") }}</span>
+              <input
+                class="input mono"
+                :value="quotaLimitsPath"
+                :placeholder="t('dashboard.customApi.source')"
+                @input="onQuotaPathInput('limitsPath', $event)"
+              />
+            </label>
+          </div>
+          <label class="field">
+            <span>{{ t("dashboard.customApi.quotaUsagePath") }}</span>
+            <input
+              class="input mono"
+              :value="quotaUsagePath"
+              :placeholder="t('dashboard.customApi.source')"
+              @input="onQuotaPathInput('usagePath', $event)"
+            />
+          </label>
         </div>
 
         <div class="modal-actions">
@@ -569,38 +675,46 @@ onMounted(async () => {
       <h3>{{ t("dashboard.accountList") }}</h3>
       <div v-if="accounts.length === 0" class="empty-tip">{{ t("dashboard.noAccounts") }}</div>
       <div v-for="acc in accounts" :key="acc.id" class="acc-card">
-        <div class="acc-info">
-          <div class="acc-name">{{ acc.name }}</div>
-          <div class="acc-sub">
-            {{ getProvider(acc.provider_id)?.name ?? acc.provider_id }}
-            <template v-if="balances[acc.id]">
-              · {{ t("dashboard.updateAt") }}
-              {{
-                new Date(balances[acc.id].fetched_at.replace(" ", "T")).toLocaleString(
-                  isZh() ? "zh-CN" : "en-US"
-                )
-              }}
-            </template>
+        <div class="acc-top">
+          <div class="acc-info">
+            <div class="acc-name">{{ acc.name }}</div>
+            <div class="acc-sub">
+              {{ getProvider(acc.provider_id)?.name ?? acc.provider_id }}
+              <template v-if="balances[acc.id]">
+                · {{ t("dashboard.updateAt") }}
+                {{
+                  new Date(balances[acc.id].fetched_at.replace(" ", "T")).toLocaleString(
+                    isZh() ? "zh-CN" : "en-US"
+                  )
+                }}
+              </template>
+            </div>
+          </div>
+          <div class="acc-balance">
+            <div class="bal-num">{{ balances[acc.id] ? fmt(balances[acc.id].balance) : "--" }}</div>
+            <div class="bal-cur">{{ balances[acc.id]?.currency ?? "" }}</div>
+          </div>
+          <div class="acc-actions">
+            <button class="btn small" @click="refreshOne(acc.id, acc.name)">
+              {{ t("dashboard.refresh") }}
+            </button>
+            <button
+              v-if="!getProvider(acc.provider_id)?.balanceSupported"
+              class="btn small"
+              @click="openBalanceModal(acc.id)"
+            >
+              {{ t("dashboard.registerBalance") }}
+            </button>
+            <button class="btn small danger" @click="removeAccount(acc.id, acc.name)">
+              {{ t("dashboard.delete") }}
+            </button>
           </div>
         </div>
-        <div class="acc-balance">
-          <div class="bal-num">{{ balances[acc.id] ? fmt(balances[acc.id].balance) : "--" }}</div>
-          <div class="bal-cur">{{ balances[acc.id]?.currency ?? "" }}</div>
-        </div>
-        <div class="acc-actions">
-          <button class="btn small" @click="refreshOne(acc.id, acc.name)">
-            {{ t("dashboard.refresh") }}
-          </button>
-          <button
-            v-if="!getProvider(acc.provider_id)?.balanceSupported"
-            class="btn small"
-            @click="openBalanceModal(acc.id)"
-          >
-            {{ t("dashboard.registerBalance") }}
-          </button>
-          <button class="btn small danger" @click="removeAccount(acc.id, acc.name)">
-            {{ t("dashboard.delete") }}
-          </button>
+        <!-- 时间窗口额度（如 3 小时限额） -->
+        <div v-for="q in accQuotas(acc.id)" :key="q.window" class="acc-quota-row">
+          <span class="q-window" :class="q.level">{{ q.window }}</span>
+          <div class="q-bar"><i :class="q.level" :style="{ width: q.barPct + '%' }"></i></div>
+          <span class="q-text">{{ q.pct }}% · {{ quotaDetail(q) }}</span>
         </div>
       </div>
     </div>
@@ -899,14 +1013,16 @@ onMounted(async () => {
 }
 
 .acc-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
   padding: 12px;
   border-radius: 10px;
   background: var(--c-panel);
   border: 1px solid var(--c-border);
   margin-bottom: 8px;
+}
+.acc-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .acc-info {
   flex: 1;
@@ -936,6 +1052,58 @@ onMounted(async () => {
 .acc-actions {
   display: flex;
   gap: 6px;
+}
+
+/* ---- 时间窗口额度行（3 小时限额） ---- */
+.acc-quota-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--c-border);
+}
+.q-window {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 30px;
+  flex-shrink: 0;
+  color: var(--c-accent-strong);
+}
+.q-window.warn {
+  color: var(--c-warn);
+}
+.q-window.danger {
+  color: var(--c-danger);
+}
+.q-bar {
+  width: 120px;
+  flex-shrink: 0;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.q-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--c-accent-strong);
+  transition: width 0.3s ease;
+}
+.q-bar > i.warn {
+  background: var(--c-warn);
+}
+.q-bar > i.danger {
+  background: var(--c-danger);
+}
+.q-text {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-mask {

@@ -4,13 +4,16 @@ import {
   initDb,
   listAccounts,
   latestBalances,
+  latestQuotas,
   todayUsageTotal,
   todayUsageByAccount,
   accountTotalEstimatedCost,
   type AccountRow,
 } from "../core/db";
 import { collectAll } from "../core/collector";
+import { windowMinutes } from "./quota";
 import { syncCustomProviders } from "../providers";
+import type { QuotaWindow } from "../providers/types";
 
 /**
  * Dashboard 共享数据存储（单例）
@@ -44,6 +47,8 @@ const todayByAccount = ref<
 const collecting = ref(false);
 const toast = ref("");
 const lastErrors = ref<string[]>([]);
+/** 各账户的时间窗口额度（如 3 小时限额），按账户 id 索引 */
+const quotas = ref<Record<number, QuotaWindow[]>>({});
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
 const totalBalance = computed(() =>
@@ -96,6 +101,26 @@ export async function loadData(): Promise<void> {
     }
   }
   balances.value = map;
+
+  const qRows = await latestQuotas();
+  const qMap: Record<number, QuotaWindow[]> = {};
+  for (const q of qRows) {
+    const list = (qMap[q.account_id] ??= []);
+    list.push({
+      window: q.window,
+      limit: q.limit_amount,
+      spent: q.spent,
+      remaining: q.limit_amount - q.spent,
+      ratio: q.limit_amount > 0 ? q.spent / q.limit_amount : 0,
+      resetAt: q.reset_at ?? undefined,
+    });
+  }
+  // 短窗口在前（3h 在 12h/24h 之前），保证 [0] 就是最紧的那条限额
+  for (const list of Object.values(qMap)) {
+    list.sort((a, b) => windowMinutes(a.window) - windowMinutes(b.window));
+  }
+  quotas.value = qMap;
+
   today.value = await todayUsageTotal();
   const byAcc = await todayUsageByAccount();
   const accMap: Record<
@@ -134,6 +159,7 @@ export async function refreshAll(): Promise<{ ok: number; failed: number; errors
 export {
   accounts,
   balances,
+  quotas,
   today,
   todayByAccount,
   collecting,

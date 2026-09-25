@@ -3,6 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import {
   listAccounts,
   saveBalanceSnapshot,
+  saveQuotaSnapshot,
   getSetting,
   setSetting,
   deleteAccount,
@@ -76,7 +77,7 @@ export const EVENT_BALANCE_UPDATED = "balance-updated";
 export const EVENT_COLLECT_START = "collect-start";
 export const EVENT_COLLECT_END = "collect-end";
 
-/** 单账户采集：调平台接口拿余额 → 落库 */
+/** 单账户采集：调平台接口拿余额 → 落库（附带的时间窗口额度一并落库） */
 export async function collectAccount(account: AccountRow): Promise<BalanceInfo> {
   const provider = getProvider(account.provider_id);
   if (!provider || !provider.balanceSupported) {
@@ -85,6 +86,9 @@ export async function collectAccount(account: AccountRow): Promise<BalanceInfo> 
   const apiKey = await invoke<string>("get_secret", { account: String(account.id) });
   const info = await provider.getBalance(apiKey);
   await saveBalanceSnapshot(account.id, info);
+  for (const q of info.quotas ?? []) {
+    await saveQuotaSnapshot(account.id, q, info.currency);
+  }
   return info;
 }
 
