@@ -22,11 +22,17 @@ pub struct SecretStore {
 
 /// 初始化密钥存储：打开数据库、确保 settings 表存在、生成/加载主密钥。
 pub async fn init(app: &tauri::AppHandle) -> Result<(), String> {
-    let path = app
+    let dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("获取数据目录失败: {e}"))?
-        .join("ai-monitor.db");
+        .map_err(|e| format!("获取数据目录失败: {e}"))?;
+
+    // sqlx 的 create_if_missing 只建数据库文件、不建父目录。
+    // 全新安装（即首次运行）时该目录不存在，会以 SQLITE_CANTOPEN(14) 失败，
+    // 进而让 setup 钩子报错、应用启动即崩溃，所以必须先建目录。
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建数据目录失败: {e}"))?;
+
+    let path = dir.join("ai-monitor.db");
 
     let opts = SqliteConnectOptions::new()
         .filename(&path)

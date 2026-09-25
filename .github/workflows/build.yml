@@ -51,6 +51,30 @@ jobs:
         run: npm run tauri build
         env:
           CI: true
+          # 默认 ad-hoc 签名（bundle.macOS.signingIdentity = "-" 的同名覆盖项）。
+          # 若在仓库 secrets 里配置了 APPLE_SIGNING_IDENTITY（Developer ID），则自动改用正式签名。
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
+
+      - name: Verify macOS code signature
+        if: matrix.platform == 'macos-latest'
+        run: |
+          APP="src-tauri/target/release/bundle/macos/AI Monitor.app"
+          # 没有 _CodeSignature 的 bundle 会被 Gatekeeper 判定为「已损坏」，直接失败以拦住坏包
+          test -f "$APP/Contents/_CodeSignature/CodeResources" || {
+            echo "::error::app bundle 未签名（缺少 _CodeSignature/CodeResources），macOS 会报「已损坏」"
+            exit 1
+          }
+          codesign --verify --verbose=2 "$APP"
+          codesign -dv --verbose=2 "$APP" 2>&1 | grep -E "Identifier|Signature|TeamIdentifier"
+
+          # dmg 里装的必须也是签好名的 app：挂载后重新校验，防止「app 签名了但 dmg 里是旧的」
+          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          MOUNT="$RUNNER_TEMP/aimon-dmg"
+          mkdir -p "$MOUNT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG" >/dev/null
+          codesign --verify --verbose=2 "$MOUNT/AI Monitor.app"
+          echo "dmg 内的 app 签名校验通过：$DMG"
+          hdiutil detach "$MOUNT" -quiet
 
       - name: Build (Windows)
         if: matrix.platform == 'windows-latest'
