@@ -22,6 +22,12 @@ import {
   displayCost,
 } from "../core/dashboardStore";
 import { primaryQuota, quotaView, type QuotaView } from "../core/quota";
+import {
+  loadMenubarConfigStore,
+  pushMenubar,
+  startMenubarRotation,
+  stopRotation,
+} from "../core/menubarStore";
 import { startAutoCollect, EVENT_BALANCE_UPDATED } from "../core/collector";
 import { i18n } from "../i18n";
 
@@ -312,6 +318,8 @@ async function maybeRefreshOnUsage(): Promise<void> {
 
 async function loadData(): Promise<void> {
   await storeLoadData();
+  // 数据变了就同步菜单栏（渲染口径与设置页预览一致）
+  void pushMenubar();
   const t = await getSetting("last_collect_at");
   lastUpdated.value = t
     ? new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
@@ -329,7 +337,11 @@ function hideOverlay(): void {
 
 onMounted(async () => {
   await ensureData();
+  // 先读菜单栏配置，避免首次推送用的是默认值
+  await loadMenubarConfigStore();
   await loadData();
+  // 轮播由此窗口驱动（灵动岛常驻，两个窗口各转各的会互相打乱）
+  startMenubarRotation();
 
   // 恢复位置与模式
   try {
@@ -435,6 +447,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopRotation();
   unlistenEvent?.();
   unlistenUsage?.();
   unlistenMove?.();

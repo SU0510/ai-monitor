@@ -200,6 +200,12 @@ export async function setAccountEnabled(id: number, enabled: boolean): Promise<v
   await d.execute("UPDATE accounts SET enabled = $1 WHERE id = $2", [enabled ? 1 : 0, id]);
 }
 
+/** 重命名账户：同一 baseUrl 的多把 key 靠名字区分（菜单栏也用它做标签） */
+export async function renameAccount(id: number, name: string): Promise<void> {
+  const d = getDb();
+  await d.execute("UPDATE accounts SET name = $1 WHERE id = $2", [name, id]);
+}
+
 // ---------------- balance snapshots ----------------
 
 export interface BalanceInfo {
@@ -580,7 +586,8 @@ export async function upsertPrice(p: {
      ON CONFLICT(provider_id, model) DO UPDATE SET
        input_price = excluded.input_price,
        output_price = excluded.output_price,
-       cache_hit_price = excluded.cache_hit_price`,
+       cache_hit_price = excluded.cache_hit_price,
+       currency = excluded.currency`,
     [p.providerId, p.model, p.inputPrice, p.outputPrice, p.cacheHitPrice, p.currency ?? "CNY"]
   );
 }

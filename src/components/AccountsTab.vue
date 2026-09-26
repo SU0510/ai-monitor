@@ -7,16 +7,25 @@ import {
   getSetting,
   addAccount as dbAddAccount,
   deleteAccount as dbDeleteAccount,
+  renameAccount as dbRenameAccount,
 } from "../core/db";
 import { collectAccount, deleteAccountAndSecret } from "../core/collector";
-import { providers, getProvider, upsertCustomConfig } from "../providers";
+import {
+  providers,
+  getProvider,
+  upsertCustomConfig,
+  listCustomConfigs,
+  deleteCustomConfig,
+} from "../providers";
 import { CUSTOM_PREFIX } from "../providers/custom";
 import {
   litellmPreset,
   litellmQuotaDefaults,
+  litellmPriceDefaults,
   requestCustomBalance,
   type CustomApiConfig,
   type FieldRule,
+  type PriceSyncConfig,
   type QuotaConfig,
 } from "../core/customApi";
 import { quotaView, windowMinutes, type QuotaView } from "../core/quota";
@@ -77,6 +86,54 @@ function onProviderChange(): void {
 function newEmptyConfig(): CustomApiConfig {
   // 默认即 LiteLLM `/key/info` 模板：用户一般只需填 baseUrl 与 key
   return { ...litellmPreset(), name: "" };
+}
+
+// 已保存的自定义 API 配置列表。
+// 之前只保存没有回显入口：重新选中「自定义 API」时表单总是从空模板开始，
+// 于是填过的 Base URL 看起来像「丢了」（其实一直在库里）。
+const savedConfigs = ref<CustomApiConfig[]>([]);
+
+async function reloadSavedConfigs(): Promise<void> {
+  savedConfigs.value = await listCustomConfigs();
+}
+
+/** 该配置下已建的账户数（删除前要拦一下，避免留下孤儿账户） */
+function configKeyCount(cfgId: number | string): number {
+  return accounts.value.filter((a) => a.provider_id === `${CUSTOM_PREFIX}${cfgId}`).length;
+}
+
+function pairsToText(map: Record<string, string>, sep: string): string {
+  return Object.entries(map)
+    .map(([k, v]) => `${k}${sep} ${v}`)
+    .join("\n");
+}
+
+/** 把已保存的配置回填到表单（这就是之前缺失的「看回来」入口） */
+function editConfig(cfg: CustomApiConfig): void {
+  customDraft.value = {
+    ...cfg,
+    fields: { ...cfg.fields },
+    headers: { ...cfg.headers },
+    query: { ...cfg.query },
+    quota: { ...(cfg.quota ?? litellmQuotaDefaults()) },
+    priceSync: { ...(cfg.priceSync ?? litellmPriceDefaults()) },
+  };
+  headersText.value = pairsToText(cfg.headers ?? {}, ":");
+  queryText.value = pairsToText(cfg.query ?? {}, "=");
+  advancedOpen.value = true;
+  syncQuotaTextFromDraft();
+  formProvider.value = CUSTOM_API_OPTION;
+}
+
+async function removeConfig(cfg: CustomApiConfig): Promise<void> {
+  const n = configKeyCount(cfg.id);
+  if (n > 0) {
+    showToast(t("dashboard.toast.customApiHasAccounts"));
+    return;
+  }
+  await deleteCustomConfig(cfg.id);
+  await reloadSavedConfigs();
+  showToast(t("dashboard.toast.customApiDeleted"));
 }
 
 function loadPreset(): void {
@@ -164,6 +221,48 @@ function onQuotaPathInput(key: "limitsPath" | "usagePath", e: Event): void {
   else setDraftQuota({ usagePath: value || fallback.usagePath });
 }
 
+// ---------- 网关单价同步 ----------
+// 网关的 JSON 结构各家不同，所以字段路径全部可改；默认值是 LiteLLM /model/info。
+
+function draftPriceSync(): PriceSyncConfig {
+  return customDraft.value?.priceSync ?? litellmPriceDefaults();
+}
+
+function setDraftPriceSync(patch: Partial<PriceSyncConfig>): void {
+  if (!customDraft.value) return;
+  customDraft.value.priceSync = { ...draftPriceSync(), ...patch };
+}
+
+/** 文本字段：留空回退默认；数字字段：非法回退默认 */
+function onPriceSyncTextInput(
+  key: keyof PriceSyncConfig,
+  fallbackKey: keyof PriceSyncConfig,
+  e: Event
+): void {
+  const value = (e.target as HTMLInputElement).value.trim();
+  const fallback = litellmPriceDefaults();
+  const def = String(fallback[fallbackKey] ?? "");
+  setDraftPriceSync({ [key]: value || def } as Partial<PriceSyncConfig>);
+}
+
+function onPriceSyncNumberInput(key: "currency" | "exchangeRate", e: Event): void {
+  const value = (e.target as HTMLInputElement).value.trim();
+  const fallback = litellmPriceDefaults();
+  if (key === "currency") {
+    setDraftPriceSync({ currency: value || fallback.currency });
+    return;
+  }
+  const n = parseFloat(value);
+  setDraftPriceSync({ exchangeRate: Number.isFinite(n) && n > 0 ? n : fallback.exchangeRate });
+}
+
+const priceSyncPath = computed(() => draftPriceSync().modelInfoPath);
+const priceSyncGroupField = computed(() => draftPriceSync().groupField);
+const priceSyncInputField = computed(() => draftPriceSync().inputCostField);
+const priceSyncOutputField = computed(() => draftPriceSync().outputCostField);
+const priceSyncCurrency = computed(() => draftPriceSync().currency);
+const priceSyncRate = computed(() => draftPriceSync().exchangeRate);
+
 /** 账户的限额行（按窗口从短到长，最多展示 2 条，避免卡片过高） */
 function accQuotas(accId: number): QuotaView[] {
   const list = quotas.value[accId] ?? [];
@@ -243,6 +342,7 @@ async function saveCustomConfig(): Promise<void> {
   cfg.query = parsePairs(queryText.value, "=");
   await upsertCustomConfig(cfg);
   const newProviderId = `${CUSTOM_PREFIX}${cfg.id}`;
+  await reloadSavedConfigs();
 
   // 用填写的多把 key 建账户
   const rows = customKeys.value.filter((r) => r.key.trim());
@@ -316,6 +416,30 @@ async function removeAccount(accId: number, accName: string): Promise<void> {
   await loadData();
 }
 
+// 重命名：同一 baseUrl 的多把 key 默认叫「XXX 1 / XXX 2」，靠重命名区分，
+// 菜单栏也用这个名字做标签，所以放在账户卡片上随手可改。
+const renamingId = ref<number | null>(null);
+const renameDraft = ref("");
+
+function startRename(accId: number, name: string): void {
+  renamingId.value = accId;
+  renameDraft.value = name;
+}
+
+async function commitRename(): Promise<void> {
+  const id = renamingId.value;
+  if (id === null) return;
+  const name = renameDraft.value.trim();
+  if (!name) {
+    renamingId.value = null;
+    return;
+  }
+  await dbRenameAccount(id, name);
+  renamingId.value = null;
+  showToast(t("dashboard.toast.renameOk", { name }));
+  await loadData();
+}
+
 async function refreshOne(accId: number, accName: string): Promise<void> {
   const acc = accounts.value.find((a) => a.id === accId);
   if (!acc) return;
@@ -386,6 +510,7 @@ function trendEnd(): string | undefined {
 
 onMounted(async () => {
   await ensureData();
+  await reloadSavedConfigs();
   const rawThreshold = await getSetting("low_balance_threshold");
   if (rawThreshold) lowThreshold.value = parseInt(rawThreshold, 10) || 20;
   // 默认账户与自定义日期范围
@@ -486,6 +611,28 @@ onMounted(async () => {
       <p v-if="formProvider !== CUSTOM_API_OPTION && !getProvider(formProvider)?.balanceSupported" class="hint">
         {{ t("dashboard.manualHint") }}
       </p>
+
+      <!-- 已保存的网关配置：之前只写不读，填过的 Base URL 看不到，像是「丢了」 -->
+      <div v-if="savedConfigs.length > 0" class="saved-configs">
+        <div class="field-sep">
+          <span class="sec-title">{{ t("dashboard.customApi.savedList") }}</span>
+        </div>
+        <div v-for="cfg in savedConfigs" :key="cfg.id" class="saved-row">
+          <div class="saved-info">
+            <div class="saved-name">{{ cfg.name }}</div>
+            <div class="saved-url mono">{{ cfg.baseUrl }}</div>
+          </div>
+          <span class="saved-count">
+            {{ t("dashboard.customApi.keyCount", { count: configKeyCount(cfg.id) }) }}
+          </span>
+          <button class="btn small" @click="editConfig(cfg)">
+            {{ t("dashboard.customApi.edit") }}
+          </button>
+          <button class="btn small danger" @click="removeConfig(cfg)">
+            {{ t("dashboard.customApi.delete") }}
+          </button>
+        </div>
+      </div>
 
       <!-- 自定义 API：内联配置 -->
       <div v-if="formProvider === CUSTOM_API_OPTION && customDraft" class="custom-form">
@@ -662,6 +809,71 @@ onMounted(async () => {
               @input="onQuotaPathInput('usagePath', $event)"
             />
           </label>
+
+          <div class="field-sep">
+            <span class="sec-title">{{ t("dashboard.customApi.priceSyncTitle") }}</span>
+          </div>
+          <p class="hint">{{ t("dashboard.customApi.priceSyncHint") }}</p>
+          <div class="field-grid">
+            <label class="field grow">
+              <span>{{ t("dashboard.customApi.priceSyncPath") }}</span>
+              <input
+                class="input mono"
+                :value="priceSyncPath"
+                placeholder="/model/info"
+                @input="onPriceSyncTextInput('modelInfoPath', 'modelInfoPath', $event)"
+              />
+            </label>
+            <label class="field">
+              <span>{{ t("dashboard.customApi.priceSyncGroupField") }}</span>
+              <input
+                class="input mono"
+                :value="priceSyncGroupField"
+                placeholder="model_name"
+                @input="onPriceSyncTextInput('groupField', 'groupField', $event)"
+              />
+            </label>
+          </div>
+          <div class="field-grid">
+            <label class="field">
+              <span>{{ t("dashboard.customApi.priceSyncInputField") }}</span>
+              <input
+                class="input mono"
+                :value="priceSyncInputField"
+                placeholder="model_info.input_cost_per_token"
+                @input="onPriceSyncTextInput('inputCostField', 'inputCostField', $event)"
+              />
+            </label>
+            <label class="field">
+              <span>{{ t("dashboard.customApi.priceSyncOutputField") }}</span>
+              <input
+                class="input mono"
+                :value="priceSyncOutputField"
+                placeholder="model_info.output_cost_per_token"
+                @input="onPriceSyncTextInput('outputCostField', 'outputCostField', $event)"
+              />
+            </label>
+          </div>
+          <div class="field-grid">
+            <label class="field">
+              <span>{{ t("dashboard.customApi.priceSyncCurrency") }}</span>
+              <input
+                class="input mono"
+                :value="priceSyncCurrency"
+                placeholder="USD"
+                @input="onPriceSyncNumberInput('currency', $event)"
+              />
+            </label>
+            <label class="field">
+              <span>{{ t("dashboard.customApi.priceSyncRate") }}</span>
+              <input
+                class="input mono"
+                :value="priceSyncRate"
+                placeholder="7.2"
+                @input="onPriceSyncNumberInput('exchangeRate', $event)"
+              />
+            </label>
+          </div>
         </div>
 
         <div class="modal-actions">
@@ -677,7 +889,26 @@ onMounted(async () => {
       <div v-for="acc in accounts" :key="acc.id" class="acc-card">
         <div class="acc-top">
           <div class="acc-info">
-            <div class="acc-name">{{ acc.name }}</div>
+            <div v-if="renamingId === acc.id" class="acc-rename">
+              <input
+                v-model="renameDraft"
+                class="input"
+                @keydown.enter="commitRename"
+                @keydown.esc="renamingId = null"
+              />
+              <button class="btn small primary" @click="commitRename">
+                {{ t("dashboard.confirm") }}
+              </button>
+              <button class="btn small" @click="renamingId = null">
+                {{ t("dashboard.cancel") }}
+              </button>
+            </div>
+            <div v-else class="acc-name">
+              {{ acc.name }}
+              <button class="btn-link" @click="startRename(acc.id, acc.name)">
+                {{ t("dashboard.rename") }}
+              </button>
+            </div>
             <div class="acc-sub">
               {{ getProvider(acc.provider_id)?.name ?? acc.provider_id }}
               <template v-if="balances[acc.id]">
@@ -827,6 +1058,38 @@ onMounted(async () => {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--c-border);
+}
+.saved-configs {
+  margin-top: 12px;
+}
+.saved-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+}
+.saved-info {
+  flex: 1;
+  min-width: 0;
+}
+.saved-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.saved-url {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-count {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  flex-shrink: 0;
 }
 .toggle {
   margin-bottom: 10px;
@@ -1030,6 +1293,28 @@ onMounted(async () => {
 }
 .acc-name {
   font-weight: 600;
+}
+.acc-rename {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.acc-rename .input {
+  padding: 4px 8px;
+  font-size: 13px;
+  min-width: 140px;
+}
+/* 重命名入口做成弱按钮，不抢账户卡片上「刷新/删除」的视觉权重 */
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--c-text-faint);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.btn-link:hover {
+  color: var(--c-accent-strong);
 }
 .acc-sub {
   color: var(--c-text-faint);

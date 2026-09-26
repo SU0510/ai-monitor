@@ -135,12 +135,6 @@ pub async fn set_proxy_secret(app: tauri::AppHandle, secret: String) -> Result<(
     crate::proxy::set_proxy_secret(&app, secret).await
 }
 
-/// 更新托盘标题：总余额与今日花费
-#[tauri::command]
-pub fn set_tray_status(app: tauri::AppHandle, total: String, today: String) {
-    crate::tray::update_tray_status(&app, total, today);
-}
-
 /// 把 CSV 内容写入用户「下载」目录（用于导出用量账单），返回完整路径
 #[tauri::command]
 pub fn export_usage_csv(csv: String) -> Result<String, String> {

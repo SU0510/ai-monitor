@@ -1,5 +1,4 @@
 import { ref, computed } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import {
   initDb,
   listAccounts,
@@ -136,11 +135,6 @@ export async function loadData(): Promise<void> {
     };
   }
   todayByAccount.value = accMap;
-  // 同步托盘标题（macOS 菜单栏）
-  void invoke("set_tray_status", {
-    total: totalBalance.value.toFixed(2),
-    today: displayCost(today.value.cost, today.value.cost_estimated).toFixed(2),
-  }).catch(() => null);
 }
 
 export async function refreshAll(): Promise<{ ok: number; failed: number; errors: string[] }> {

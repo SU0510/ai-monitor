@@ -50,6 +50,39 @@ export interface QuotaConfig {
   windows?: string[];
 }
 
+/**
+ * 模型单价同步规则（LiteLLM `/model/info` 形态）。
+ *
+ * 从网关读取它自己那份模型清单（每个模型组 + 底层模型 + 每 token 单价），
+ * 换算成「每百万 token」后写入 price_table —— 代理记账就是按这张表算费用的，
+ * 所以同步后估算消耗会自动跟着网关的真实单价走，不必手工维护。
+ */
+export interface PriceSyncConfig {
+  /** 模型清单接口路径，如 "/model/info" */
+  modelInfoPath: string;
+  /** 清单数组的 JSON 路径，如 "data" */
+  listPath?: string;
+  /** 模型组（对外别名）字段，如 "model_name" */
+  groupField: string;
+  /** 底层模型字段，如 "litellm_params.model"；与模型组不同时额外写一行 */
+  modelField?: string;
+  /** 输入单价字段 */
+  inputCostField: string;
+  /** 输出单价字段 */
+  outputCostField: string;
+  /** 缓存命中单价字段（可选） */
+  cacheCostField?: string;
+  /** 单价单位：perToken（网关原始值，需 ×1e6）或 perMillion（已是每百万） */
+  costUnit: "perToken" | "perMillion";
+  /** 网关单价的币种，如 "USD" */
+  currency: string;
+  /**
+   * 汇率倍数：写入价格表前乘以此值。
+   * 网关按美元计价、而本应用统一按人民币记账时填 7.1 之类；不换算填 1。
+   */
+  exchangeRate: number;
+}
+
 export interface CustomApiConfig {
   /** 实例唯一标识，provider id = `custom:<id>` */
   id: string;
@@ -71,6 +104,8 @@ export interface CustomApiConfig {
   };
   /** 时间窗口额度提取规则（如 3 小时限额）；缺省走 LiteLLM 默认值 */
   quota?: QuotaConfig;
+  /** 模型单价同步规则；缺省走 LiteLLM 默认值 */
+  priceSync?: PriceSyncConfig;
   /** 是否自动注入 Authorization: Bearer <key> */
   bearerAuth: boolean;
   /** 封禁/无效判定字段路径（为真则视为无效），如 "info.blocked" */
@@ -89,6 +124,22 @@ export function litellmQuotaDefaults(): QuotaConfig {
     usagePath: "info.budget_limits_usage.{window}.current_spend",
     spentField: "current_spend",
     windows: ["3h"],
+  };
+}
+
+/** LiteLLM `/model/info` 的单价同步默认值 */
+export function litellmPriceDefaults(): PriceSyncConfig {
+  return {
+    modelInfoPath: "/model/info",
+    listPath: "data",
+    groupField: "model_name",
+    modelField: "litellm_params.model",
+    inputCostField: "model_info.input_cost_per_token",
+    outputCostField: "model_info.output_cost_per_token",
+    cacheCostField: "model_info.cache_read_input_token_cost",
+    costUnit: "perToken",
+    currency: "USD",
+    exchangeRate: 1,
   };
 }
 
@@ -129,6 +180,7 @@ export function litellmPreset(): CustomApiConfig {
       currency: { source: "info.currency", transform: "none" },
     },
     quota: litellmQuotaDefaults(),
+    priceSync: litellmPriceDefaults(),
     bearerAuth: true,
     invalidPath: "info.blocked",
     invalidMessage: "API Key 已被封禁",
@@ -141,8 +193,12 @@ export async function loadCustomConfigs(): Promise<CustomApiConfig[]> {
   try {
     const parsed = JSON.parse(raw) as CustomApiConfig[];
     if (!Array.isArray(parsed)) return [];
-    // 老配置没有 quota 段：补上 LiteLLM 默认值，使既有账户无需重建即可显示限额
-    return parsed.map((c) => (c.quota ? c : { ...c, quota: litellmQuotaDefaults() }));
+    // 老配置没有 quota / priceSync 段：补上 LiteLLM 默认值，使既有账户无需重建即可用
+    return parsed.map((c) => ({
+      ...c,
+      quota: c.quota ?? litellmQuotaDefaults(),
+      priceSync: c.priceSync ?? litellmPriceDefaults(),
+    }));
   } catch {
     return [];
   }
@@ -155,7 +211,7 @@ export async function saveCustomConfigs(configs: CustomApiConfig[]): Promise<voi
 // ---------------- JSON 路径提取 ----------------
 
 /** 按点路径（支持数组下标）从对象里取值 */
-function getByPath(obj: unknown, path: string): unknown {
+export function getByPath(obj: unknown, path: string): unknown {
   if (!path) return undefined;
   const tokens = path
     .split(".")
@@ -176,7 +232,7 @@ function getByPath(obj: unknown, path: string): unknown {
   return cur;
 }
 
-function toNumber(v: unknown): number | undefined {
+export function toNumber(v: unknown): number | undefined {
   if (typeof v === "number") return v;
   if (typeof v === "string" && v.trim() !== "") {
     const n = Number(v);
@@ -273,7 +329,7 @@ export function extractQuotas(resp: unknown, quota?: QuotaConfig): QuotaWindow[]
 
 // ---------------- 请求与解析 ----------------
 
-function buildUrl(cfg: CustomApiConfig): string {
+export function buildUrl(cfg: CustomApiConfig): string {
   const base = cfg.baseUrl.replace(/\/+$/, "");
   const path = cfg.path.startsWith("/") ? cfg.path : `/${cfg.path}`;
   // 避免用户已把完整路径（含 path）填进 baseUrl 时重复拼接
@@ -285,7 +341,7 @@ function buildUrl(cfg: CustomApiConfig): string {
   return qs ? `${base}${path}?${qs}` : `${base}${path}`;
 }
 
-function buildHeaders(cfg: CustomApiConfig, apiKey: string): Array<[string, string]> {
+export function buildHeaders(cfg: CustomApiConfig, apiKey: string): Array<[string, string]> {
   const map: Record<string, string> = {};
   for (const [k, v] of Object.entries(cfg.headers)) {
     map[k] = v.replace(/\{\{\s*(?:key|apiKey)\s*\}\}/g, apiKey);

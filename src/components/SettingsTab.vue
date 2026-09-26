@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { getSetting, setSetting, listPrices, upsertPrice, type PriceRow } from "../core/db";
 import { getCollectIntervalMinutes, setCollectIntervalMinutes } from "../core/collector";
 import { providers } from "../providers";
+import { CUSTOM_PREFIX } from "../providers/custom";
+import { syncGatewayPrices } from "../core/priceSync";
+import { loadMenubarConfigStore } from "../core/menubarStore";
+import MenubarSettings from "./MenubarSettings.vue";
 import { testWebhook as testWebhookFn } from "../core/alert";
 import { syncPricesIfNeeded } from "../core/platformSync";
 import type { WebhookChannel } from "../core/webhook";
@@ -229,6 +233,34 @@ async function installUpdate(): Promise<void> {
   }
 }
 
+// 从网关（自定义 API）读取模型清单与单价
+const syncingGateway = ref(false);
+const gatewayAccountId = ref<number | null>(null);
+/** 只有自定义 API 账户才对应一个可查询模型清单的网关 */
+const gatewayAccounts = computed(() =>
+  accounts.value.filter((a) => a.provider_id.startsWith(CUSTOM_PREFIX))
+);
+
+async function syncGateway(): Promise<void> {
+  const acc = gatewayAccounts.value.find((a) => a.id === gatewayAccountId.value);
+  if (!acc) {
+    showToast(t("dashboard.settings.gatewayPick"));
+    return;
+  }
+  syncingGateway.value = true;
+  try {
+    const key = await invoke<string>("get_secret", { account: String(acc.id) });
+    const configId = acc.provider_id.slice(CUSTOM_PREFIX.length);
+    const r = await syncGatewayPrices(configId, key);
+    await loadPrices();
+    showToast(t("dashboard.settings.gatewayOk", { groups: r.groups, rows: r.rows }));
+  } catch (e) {
+    showToast(t("dashboard.settings.gatewayFail", { err: (e as Error).message || String(e) }));
+  } finally {
+    syncingGateway.value = false;
+  }
+}
+
 onMounted(async () => {
   intervalMinutes.value = await getCollectIntervalMinutes();
   lowThreshold.value = (await getSetting("low_balance_threshold")) ?? "20";
@@ -239,6 +271,9 @@ onMounted(async () => {
   const proxySaved = await getSetting("proxy_account_id");
   proxyAccountId.value = proxySaved ? parseInt(proxySaved, 10) : (accounts.value[0]?.id ?? null);
   proxySecretEnabled.value = !!(await getSetting("proxy_secret"));
+  gatewayAccountId.value = gatewayAccounts.value[0]?.id ?? null;
+  // 面板窗口有自己的 JS 上下文，菜单栏配置要在本窗口也加载一次
+  await loadMenubarConfigStore();
   await loadPrices();
 });
 </script>
@@ -351,6 +386,8 @@ onMounted(async () => {
       </div>
     </div>
 
+    <MenubarSettings />
+
     <div class="panel">
       <h3>{{ t("dashboard.settings.priceTitle") }}</h3>
       <table class="usage-table">
@@ -416,6 +453,22 @@ onMounted(async () => {
         </button>
         <span class="hint-inline">{{ t("dashboard.settings.priceSyncHint") }}</span>
       </div>
+
+      <!-- 从网关读取模型组与单价，直接写入上面的价格表 -->
+      <div class="form-row">
+        <select v-model.number="gatewayAccountId" class="input select">
+          <option v-for="a in gatewayAccounts" :key="a.id" :value="a.id">{{ a.name }}</option>
+        </select>
+        <button
+          class="btn"
+          :disabled="syncingGateway || gatewayAccounts.length === 0"
+          @click="syncGateway"
+        >
+          {{ syncingGateway ? t("dashboard.adding") : t("dashboard.settings.gatewaySync") }}
+        </button>
+        <span class="hint-inline">{{ t("dashboard.settings.gatewaySyncHint") }}</span>
+      </div>
+
       <p class="hint">{{ t("dashboard.settings.priceHint") }}</p>
     </div>
 
