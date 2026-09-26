@@ -27,7 +27,7 @@ import {
   pushMenubar,
   startMenubarRotation,
   stopRotation,
-  EVENT_MENUBAR_CONFIG_CHANGED,
+  EVENT_MENUBAR_PUSH_REQUESTED,
 } from "../core/menubarStore";
 import { startAutoCollect, EVENT_BALANCE_UPDATED } from "../core/collector";
 import { i18n } from "../i18n";
@@ -395,9 +395,10 @@ onMounted(async () => {
     void maybeRefreshOnUsage();
   });
 
-  // 设置窗口改完菜单栏配置后广播过来：立刻按新配置重推一次（不等 30 秒兜底刷新）
-  unlistenMenubar = await listen(EVENT_MENUBAR_CONFIG_CHANGED, () => {
+  // 设置窗口 / 账户页改完配置或账户数据后广播过来：立刻重读并重推（不等 30 秒兜底刷新）
+  unlistenMenubar = await listen(EVENT_MENUBAR_PUSH_REQUESTED, () => {
     void (async () => {
+      await storeLoadData();
       await loadMenubarConfigStore();
       await pushMenubar();
       startMenubarRotation();

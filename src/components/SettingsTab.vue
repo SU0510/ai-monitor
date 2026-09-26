@@ -88,6 +88,21 @@ async function toggleAutostart(): Promise<void> {
   }
 }
 
+// 悬浮窗（灵动岛）是否显示
+const overlayOn = ref(true);
+
+async function toggleOverlay(): Promise<void> {
+  await setSetting("overlay_enabled", overlayOn.value ? "1" : "0");
+  try {
+    await invoke("set_overlay_enabled", { enabled: overlayOn.value });
+  } catch (e) {
+    overlayOn.value = !overlayOn.value;
+    showToast(t("dashboard.toast.overlayFail", { err: (e as Error).message || String(e) }));
+    return;
+  }
+  showToast(overlayOn.value ? t("dashboard.toast.overlayOn") : t("dashboard.toast.overlayOff"));
+}
+
 // 代理模式
 const proxyAccountId = ref<number | null>(null);
 const PROXY_ADDR = "http://127.0.0.1:8899/v1";
@@ -268,6 +283,9 @@ onMounted(async () => {
     ((await getSetting("alert_webhook_channel")) as WebhookChannel) ?? "serverchan";
   alertWebhookUrl.value = (await getSetting("alert_webhook_url")) ?? "";
   autostartOn.value = await isAutostartEnabled().catch(() => false);
+  // 悬浮窗偏好：默认显示；关掉后关闭面板也不会把它弹回来（由 Rust 侧记住）
+  overlayOn.value = (await getSetting("overlay_enabled")) !== "0";
+  await invoke("set_overlay_enabled", { enabled: overlayOn.value }).catch(() => null);
   const proxySaved = await getSetting("proxy_account_id");
   proxyAccountId.value = proxySaved ? parseInt(proxySaved, 10) : (accounts.value[0]?.id ?? null);
   proxySecretEnabled.value = !!(await getSetting("proxy_secret"));
@@ -384,6 +402,18 @@ onMounted(async () => {
           {{ t("dashboard.settings.clearSecret") }}
         </button>
       </div>
+    </div>
+
+    <div class="panel">
+      <h3>{{ t("dashboard.settings.overlayTitle") }}</h3>
+      <div class="form-row">
+        <label class="form-label">{{ t("dashboard.settings.overlayShow") }}</label>
+        <label class="switch">
+          <input v-model="overlayOn" type="checkbox" @change="toggleOverlay" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p class="hint">{{ t("dashboard.settings.overlayHint") }}</p>
     </div>
 
     <MenubarSettings />

@@ -18,6 +18,7 @@ import {
   deleteCustomConfig,
 } from "../providers";
 import { CUSTOM_PREFIX } from "../providers/custom";
+import { requestMenubarPush } from "../core/menubarStore";
 import {
   litellmPreset,
   litellmQuotaDefaults,
@@ -46,6 +47,15 @@ import {
 
 const { t } = useI18n();
 const isZh = () => i18n.global.locale.value === "zh";
+
+/**
+ * 账户名/数量变了要立刻反映到菜单栏（标题与下拉菜单都用账户名做标签）。
+ * 托盘由灵动岛窗口统一推送，这里只发请求，避免多出第二个轮播定时器。
+ */
+async function reloadAndSyncMenubar(): Promise<void> {
+  await loadData();
+  await requestMenubarPush();
+}
 
 const lowThreshold = ref(20);
 
@@ -356,7 +366,7 @@ async function saveCustomConfig(): Promise<void> {
   customDraft.value = null;
   customKeys.value = [{ name: "", key: "" }];
   formName.value = "";
-  await loadData();
+  await reloadAndSyncMenubar();
   showToast(rows.length > 0 ? t("dashboard.toast.addOk", { name: baseName }) : t("dashboard.toast.customApiSaved"));
 }
 
@@ -392,7 +402,7 @@ async function addAccount(): Promise<void> {
     formKey.value = "";
     formName.value = "";
     showToast(t("dashboard.toast.addOk", { name }));
-    await loadData();
+    await reloadAndSyncMenubar();
   } catch (e) {
     showToast(t("dashboard.toast.addFail", { err: (e as Error).message || String(e) }));
   } finally {
@@ -413,7 +423,7 @@ function cancelCustomForm(): void {
 async function removeAccount(accId: number, accName: string): Promise<void> {
   await deleteAccountAndSecret(accId);
   showToast(t("dashboard.toast.delOk", { name: accName }));
-  await loadData();
+  await reloadAndSyncMenubar();
 }
 
 // 重命名：同一 baseUrl 的多把 key 默认叫「XXX 1 / XXX 2」，靠重命名区分，
@@ -437,7 +447,7 @@ async function commitRename(): Promise<void> {
   await dbRenameAccount(id, name);
   renamingId.value = null;
   showToast(t("dashboard.toast.renameOk", { name }));
-  await loadData();
+  await reloadAndSyncMenubar();
 }
 
 async function refreshOne(accId: number, accName: string): Promise<void> {

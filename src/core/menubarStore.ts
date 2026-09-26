@@ -31,8 +31,14 @@ import {
  * 读写配置、把 store 里的数据整理成渲染输入、推给 Rust 托盘。
  */
 
-/** 配置变更事件：设置窗口改完后广播，让其它窗口（灵动岛）立刻重新读取 */
-export const EVENT_MENUBAR_CONFIG_CHANGED = "menubar-config-changed";
+/**
+ * 请求重推托盘的事件。
+ *
+ * 托盘只能有一个写入者：轮播是个定时器，两个窗口各转各的就会互相把标题改回去
+ * （典型表现是改了账户名后菜单栏在新旧名字之间跳）。所以真正调 set_tray_* 的
+ * 只有灵动岛窗口；设置窗口与账户页改完东西只发这个事件，由灵动岛重读数据后推送。
+ */
+export const EVENT_MENUBAR_PUSH_REQUESTED = "menubar-push-requested";
 
 /** 当前配置（设置页与托盘共用同一份，改完立即生效） */
 export const menubarConfig = ref<MenubarConfig>(defaultMenubarConfig());
@@ -61,11 +67,17 @@ export async function saveMenubarConfigStore(cfg: MenubarConfig): Promise<void> 
   const normalized = normalizeMenubarConfig(cfg);
   menubarConfig.value = normalized;
   await setSetting(MENUBAR_CONFIG_KEY, JSON.stringify(normalized));
-  // 设置窗口与灵动岛是两个独立的 JS 上下文，各自持有一份 menubarConfig；
-  // 广播出去让灵动岛（负责定时推送的那个窗口）马上同步，否则它会在下次刷新时用旧值覆盖
-  await emit(EVENT_MENUBAR_CONFIG_CHANGED).catch(() => null);
-  await pushMenubar();
-  restartRotation();
+  // 设置窗口不直接推托盘（它自己也有轮播定时器的话会和灵动岛抢标题），
+  // 只广播「请重推」，由灵动岛重新读取配置与数据后统一推送。
+  await requestMenubarPush();
+}
+
+/**
+ * 请求灵动岛窗口重推托盘，用于配置或账户数据变化之后。
+ * 设置窗口、账户页都调这里，避免出现第二个托盘写入者。
+ */
+export async function requestMenubarPush(): Promise<void> {
+  await emit(EVENT_MENUBAR_PUSH_REQUESTED).catch(() => null);
 }
 
 /** 把 store 数据整理成渲染输入（同一 baseUrl 的第 N 把 key 就是第 N 个账户，天然分开） */

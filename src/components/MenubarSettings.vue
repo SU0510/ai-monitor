@@ -12,6 +12,9 @@ const cfg = menubarConfig;
 /** 与推给托盘的是同一个渲染函数，预览不会与真实菜单栏不一致 */
 const preview = computed(() => renderMenubarNow());
 
+/** 提示里去掉定宽补齐用的不换行空格，否则每帧后面拖一串空白 */
+const frameList = computed(() => preview.value.titles.map((t) => t.replace(/\u00a0+$/, "")));
+
 const METRICS: MenubarMetric[] = ["balance", "todayCost", "tokens", "quota"];
 const SEPARATORS = ["·", "|", "/", "•"];
 
@@ -143,12 +146,19 @@ function onMinimalChange(on: boolean): void {
         <input v-model="cfg.menuAccounts" type="checkbox" />
         <span class="slider"></span>
       </label>
-      <template v-if="cfg.menuAccounts">
-        <select v-model="cfg.menuAccountMetric" class="input select">
-          <option v-for="m in METRICS" :key="m" :value="m">{{ metricLabel(m) }}</option>
-        </select>
-      </template>
     </div>
+    <p v-if="cfg.menuAccounts" class="hint">{{ t("dashboard.menubar.menuAccountsHint") }}</p>
+
+    <div v-if="!cfg.minimal && cfg.titleMode === 'rotate'" class="form-row">
+      <span class="form-label">{{ t("dashboard.menubar.rotateFixedWidth") }}</span>
+      <label class="switch">
+        <input v-model="cfg.rotateFixedWidth" type="checkbox" />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <p v-if="!cfg.minimal && cfg.titleMode === 'rotate'" class="hint">
+      {{ t("dashboard.menubar.rotateFixedWidthHint") }}
+    </p>
 
     <!-- 实时预览：与真实菜单栏同一个渲染器 -->
     <div class="preview">
@@ -159,7 +169,7 @@ function onMinimalChange(on: boolean): void {
       {{
         t("dashboard.menubar.rotateFrames", {
           n: preview.titles.length,
-          list: preview.titles.join("  →  "),
+          list: frameList.join("  →  "),
         })
       }}
     </p>

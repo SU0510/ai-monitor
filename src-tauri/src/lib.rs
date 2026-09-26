@@ -58,9 +58,11 @@ pub fn run() {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = w2.hide();
-                        // 面板隐藏后回归灵动岛
-                        if let Some(ov) = handle.get_webview_window("overlay") {
-                            let _ = ov.show();
+                        // 面板隐藏后回归灵动岛；用户把悬浮窗关掉了就不再弹回来
+                        if tray::is_overlay_enabled(&handle) {
+                            if let Some(ov) = handle.get_webview_window("overlay") {
+                                let _ = ov.show();
+                            }
                         }
                     }
                 });
@@ -93,6 +95,7 @@ pub fn run() {
             commands::set_proxy_secret,
             tray::set_tray_display,
             tray::set_tray_title,
+            tray::set_overlay_enabled,
             commands::show_window,
             commands::hide_window,
             commands::toggle_window,

@@ -28,8 +28,41 @@ pub struct TrayState {
     pub menu_sig: Mutex<String>,
 }
 
+/// 灵动岛（悬浮窗）显示偏好。默认开；关掉后关闭面板也不该把它再弹回来。
+pub struct OverlayPref(pub Mutex<bool>);
+
+impl Default for OverlayPref {
+    fn default() -> Self {
+        Self(Mutex::new(true))
+    }
+}
+
+pub fn is_overlay_enabled(app: &AppHandle) -> bool {
+    app.try_state::<OverlayPref>()
+        .map(|s| *s.0.lock().unwrap_or_else(|e| e.into_inner()))
+        .unwrap_or(true)
+}
+
+/// 设置悬浮窗是否显示：立刻生效，并记住偏好（前端同时写进 settings 做持久化）
+#[tauri::command]
+pub fn set_overlay_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let Some(state) = app.try_state::<OverlayPref>() else {
+        return Err("状态未初始化".into());
+    };
+    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = enabled;
+    if let Some(w) = app.get_webview_window("overlay") {
+        if enabled {
+            let _ = w.show();
+        } else {
+            let _ = w.hide();
+        }
+    }
+    Ok(())
+}
+
 pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     app.manage(TrayState::default());
+    app.manage(OverlayPref::default());
 
     let menu = build_menu(app.handle(), &[])?;
     let icon = app
@@ -51,6 +84,8 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 "quit" => app.exit(0),
                 // 账户条目（前端生成的 acc-<id>）：点开面板看明细
                 _ if id.starts_with("acc-") => show_dashboard(app),
+                // 汇总条目：同样打开面板
+                "agg" => show_dashboard(app),
                 _ => {}
             }
         })

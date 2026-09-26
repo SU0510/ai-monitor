@@ -162,6 +162,10 @@ export default {
       lowBalanceThreshold: "低余额提醒阈值（¥）",
       save: "保存",
       autostart: "开机自动启动",
+      overlayTitle: "悬浮窗",
+      overlayShow: "显示悬浮窗（灵动岛）",
+      overlayHint:
+        "关掉后只有一个菜单栏图标，点它打开面板；打开后屏幕顶部会常驻一个小胶囊，鼠标移上去展开金额。",
       proxy: "统一代理（自动统计 Token）",
       proxyHint: "代理服务已在本机运行。把调用的程序地址改为下面任意一个，自动记录 token。",
       proxyAccount: "Token 记入账户",
@@ -212,7 +216,11 @@ export default {
       maxSegments: "最多显示 key 数",
       separator: "分隔符",
       menuAccounts: "下拉菜单列出各 key",
-      menuAccountMetric: "菜单内显示",
+      menuAccountsHint:
+        "下拉菜单把当前勾选的全部组件都列出来：汇总一行，每把 key 一行（同一把 key 的多个指标并在一行里）。",
+      rotateFixedWidth: "固定宽度",
+      rotateFixedWidthHint:
+        "轮播时把每一帧补齐到最宽的一帧，切换时菜单栏不左右跳动。菜单栏用的是比例字体，数字宽度仍会有细微差异。",
       metric_balance: "余额",
       metric_todayCost: "今日消耗",
       metric_tokens: "今日 Tokens",
@@ -253,6 +261,9 @@ export default {
       autostartOn: "已开启开机自启",
       autostartOff: "已关闭开机自启",
       autostartFail: "操作失败：{err}",
+      overlayOn: "已显示悬浮窗",
+      overlayOff: "已隐藏悬浮窗",
+      overlayFail: "切换悬浮窗失败：{err}",
       saveProxyOk: "代理设置已保存，token 将自动记录到该账户",
       proxySecretOk: "代理密钥已保存并即时生效",
       proxySecretCleared: "代理密钥已清除（不再鉴权）",

@@ -45,10 +45,10 @@ export interface MenubarConfig {
   slots: MenubarSlot[];
   /** 标题里最多出现几个「指定 key」槽位，超出折叠为 +N；仅 segments 模式生效 */
   maxSegments: number;
-  /** 下拉菜单里逐 key 列出 */
+  /** 下拉菜单里逐 key 列出（列出的内容就是当前勾选的全部槽位） */
   menuAccounts: boolean;
-  /** 下拉菜单里每个 key 显示哪个指标 */
-  menuAccountMetric: MenubarMetric;
+  /** 轮播时把每帧补齐到最宽一帧，避免菜单栏左右跳动 */
+  rotateFixedWidth: boolean;
   /** 极简模式：只留数字，去掉账户名与单位，金额固定 1 位小数 */
   minimal: boolean;
   /** 极简模式下是否带货币符号（¥）；关掉就是纯数字 */
@@ -116,7 +116,7 @@ export function defaultMenubarConfig(): MenubarConfig {
     ],
     maxSegments: 3,
     menuAccounts: true,
-    menuAccountMetric: "balance",
+    rotateFixedWidth: true,
     minimal: false,
     minimalSymbol: true,
   };
@@ -188,7 +188,7 @@ export function normalizeMenubarConfig(raw: unknown): MenubarConfig {
     slots,
     maxSegments: asPositiveInt(o.maxSegments, def.maxSegments, 1, MAX_SLOTS),
     menuAccounts: asBool(o.menuAccounts, def.menuAccounts),
-    menuAccountMetric: asMetric(o.menuAccountMetric, def.menuAccountMetric),
+    rotateFixedWidth: asBool(o.rotateFixedWidth, def.rotateFixedWidth),
     minimal: asBool(o.minimal, def.minimal),
     minimalSymbol: asBool(o.minimalSymbol, def.minimalSymbol),
   };
@@ -300,11 +300,94 @@ function quotaPercentText(text: string): string {
   return m ? m[1] : text;
 }
 
+/** 全角/中日韩字符在菜单栏里占两个字宽 */
+function isWideChar(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff)
+  );
+}
+
+/** 估算菜单栏里的占位宽度（全角算 2，半角算 1；比例字体下是近似值） */
+export function displayWidth(text: string): number {
+  let w = 0;
+  for (const ch of text) w += isWideChar(ch.codePointAt(0) ?? 0) ? 2 : 1;
+  return w;
+}
+
+const NBSP = "\u00a0";
+
+/**
+ * 轮播时各帧长短不同会让菜单栏项左右跳动（名字长短、缺某个指标都会变）。
+ * 菜单栏项由系统右对齐排布，所以把每帧尾部补不换行空格到同一宽度后，
+ * 项的盒子宽度恒定，帧内文字起点也随之恒定，看起来就是「不动」。
+ * 只有一帧时无需补齐。
+ */
+function padToWidest(titles: string[]): string[] {
+  if (titles.length <= 1) return titles;
+  const widest = Math.max(...titles.map(displayWidth));
+  return titles.map((t) => t + NBSP.repeat(Math.max(0, widest - displayWidth(t))));
+}
+
 /** 采集状态前缀：出错优先于采集中（一眼能看出数据是旧的） */
 function statePrefix(data: MenubarData): string {
   if (data.hasError) return "!";
   if (data.collecting) return "…";
   return "";
+}
+
+/**
+ * 下拉菜单：把当前勾选的全部槽位列出来——汇总一行，每个 key 一行，
+ * 行内把该 key 的所有槽位并在一起。菜单内容与菜单栏文字同源，改配置两边一起变。
+ */
+function buildMenu(cfg: MenubarConfig, data: MenubarData, sep: string): MenubarMenuItem[] {
+  if (!cfg.menuAccounts) return [];
+  const rows: MenubarMenuItem[] = [];
+
+  const aggregateSlots = cfg.slots.filter((s) => s.kind === "aggregate");
+  const aggParts = aggregateSlots
+    .map((s) => slotText(s, data, { label: false }))
+    .filter((x): x is string => x !== null);
+  if (aggParts.length > 0) {
+    const aggLabel = aggregateSlots.find((s) => s.label)?.label;
+    const text = aggParts.join(sep);
+    rows.push({ id: "agg", label: aggLabel ? `${aggLabel} ${text}` : text, enabled: true });
+  }
+
+  // 按配置顺序收集每个 key 的槽位（同一把 key 的多个指标并成一行）
+  const order: number[] = [];
+  const byAccount = new Map<number, MenubarSlot[]>();
+  for (const s of cfg.slots) {
+    if (s.kind !== "account") continue;
+    const id = s.accountId as number;
+    const list = byAccount.get(id);
+    if (list) list.push(s);
+    else {
+      byAccount.set(id, [s]);
+      order.push(id);
+    }
+  }
+
+  for (const id of order) {
+    const acc = data.accounts.find((a) => a.id === id);
+    // 账户已删除：不列这一行，避免名字对不上的残留条目
+    if (!acc) continue;
+    const slots = byAccount.get(id)!;
+    const parts = slots
+      .map((s) => slotText(s, data, { label: false }))
+      .filter((x): x is string => x !== null);
+    if (parts.length === 0) continue;
+    const label = slots.find((s) => s.label)?.label ?? acc.label;
+    rows.push({ id: `acc-${id}`, label: `${label} ${parts.join(sep)}`, enabled: true });
+  }
+
+  return rows;
 }
 
 /**
@@ -318,18 +401,7 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
   const accountSlots = cfg.slots.filter((s) => s.kind === "account");
   const aggregateSlots = cfg.slots.filter((s) => s.kind === "aggregate");
 
-  const menu: MenubarMenuItem[] = cfg.menuAccounts
-    ? data.accounts.map((acc) => {
-        const slot: MenubarSlot = {
-          id: `menu-${acc.id}`,
-          kind: "account",
-          metric: cfg.menuAccountMetric,
-          accountId: acc.id,
-        };
-        const text = slotText(slot, data, { label: true });
-        return { id: `acc-${acc.id}`, label: text ?? acc.label, enabled: true };
-      })
-    : [];
+  const menu = buildMenu(cfg, data, sep);
 
   const titles: string[] = [];
   let overflow = 0;
@@ -398,5 +470,8 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
     .filter((x): x is string => x !== null);
   const tooltip = tooltipParts.length > 0 ? `AI Monitor${sep}${tooltipParts.join(sep)}` : null;
 
-  return { titles, tooltip, menu, overflow };
+  // 轮播固定宽度：补齐后每帧盒子一样宽，切帧时菜单栏不再左右跳
+  const finalTitles = cfg.rotateFixedWidth ? padToWidest(titles) : titles;
+
+  return { titles: finalTitles, tooltip, menu, overflow };
 }

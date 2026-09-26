@@ -163,6 +163,10 @@ export default {
       lowBalanceThreshold: "Low-balance alert threshold (¥)",
       save: "Save",
       autostart: "Launch at login",
+      overlayTitle: "Floating window",
+      overlayShow: "Show the floating window (Dynamic Island)",
+      overlayHint:
+        "When off, only the menu bar icon remains — click it to open the panel. When on, a small capsule stays at the top of the screen and expands on hover.",
       proxy: "Unified proxy (auto token tracking)",
       proxyHint:
         "The proxy is running locally. Point your app's base URL to one below to record tokens automatically.",
@@ -218,7 +222,11 @@ export default {
       maxSegments: "Max keys shown",
       separator: "Separator",
       menuAccounts: "List each key in the dropdown",
-      menuAccountMetric: "Show in menu",
+      menuAccountsHint:
+        "The dropdown lists every component you have enabled: one row for the totals, one row per key (all of that key's metrics on a single row).",
+      rotateFixedWidth: "Fixed width",
+      rotateFixedWidthHint:
+        "Pads every rotation frame to the widest one so the menu bar stops shifting sideways. The menu bar uses a proportional font, so digit widths still differ slightly.",
       metric_balance: "Balance",
       metric_todayCost: "Today's spend",
       metric_tokens: "Today's tokens",
@@ -259,6 +267,9 @@ export default {
       autostartOn: "Autostart enabled",
       autostartOff: "Autostart disabled",
       autostartFail: "Operation failed: {err}",
+      overlayOn: "Floating window shown",
+      overlayOff: "Floating window hidden",
+      overlayFail: "Could not toggle the floating window: {err}",
       saveProxyOk: "Proxy saved; tokens will be recorded to this account",
       proxySecretOk: "Proxy secret saved and applied immediately",
       proxySecretCleared: "Proxy secret cleared (auth disabled)",

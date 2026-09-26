@@ -3,6 +3,7 @@ import {
   slotText,
   renderMenubar,
   formatMoney1,
+  displayWidth,
 } from "../src/core/menubar.ts";
 import { primaryQuota, quotaView } from "../src/core/quota.ts";
 
@@ -41,7 +42,8 @@ const base = {
   separator: "·",
   maxSegments: 3,
   menuAccounts: true,
-  menuAccountMetric: "balance",
+  // 定宽补齐单独测；这里关掉，断言里就不用写一串不换行空格
+  rotateFixedWidth: false,
   minimal: false,
   minimalSymbol: true,
 };
@@ -98,6 +100,7 @@ eq(formatMoney1(5.05, "CNY", false), "5.0", "formatMoney1 toFixed semantics");
 // ---------- 老配置回退 ----------
 const legacy = N({ showTitle: true, slots: [], maxSegments: 3 });
 eq([legacy.minimal, legacy.minimalSymbol], [false, true], "legacy defaults");
+eq(legacy.rotateFixedWidth, true, "legacy rotateFixedWidth default");
 
 // ---------- 缺数据不显示假 0 ----------
 eq(
@@ -190,6 +193,81 @@ eq(
   renderMenubar(N({ ...base, titleMode: "segments", slots: mm.slots }), data).overflow,
   1,
   "segments folds"
+);
+
+// ---------- 下拉菜单：列出当前勾选的全部组件 ----------
+const menuSlots = [
+  { id: "ab", kind: "aggregate", metric: "balance" },
+  { id: "s1", kind: "account", metric: "balance", accountId: 1 },
+  { id: "s2", kind: "account", metric: "quota", accountId: 1 },
+  { id: "s3", kind: "account", metric: "balance", accountId: 2 },
+];
+const menuCfg = (extra) => N({ ...base, slots: menuSlots, ...extra });
+eq(
+  renderMenubar(menuCfg({}), data).menu,
+  [
+    { id: "agg", label: "¥173.67", enabled: true },
+    { id: "acc-1", label: "ustc $91.08 · 3h 10%", enabled: true },
+    { id: "acc-2", label: "ustc-lhy $82.60", enabled: true },
+  ],
+  "menu lists every enabled slot, one row per key"
+);
+// 每把 key 的多个指标并进同一行，而不是只显示某一个指标
+eq(
+  renderMenubar(menuCfg({}), data).menu[1].label.split(" · ").length,
+  2,
+  "key row holds all its metrics"
+);
+eq(renderMenubar(menuCfg({ menuAccounts: false }), data).menu, [], "menu off -> empty");
+eq(
+  renderMenubar(
+    N({ ...base, slots: [{ id: "x", kind: "account", metric: "balance", accountId: 99 }] }),
+    data
+  ).menu,
+  [],
+  "menu drops deleted key"
+);
+
+// ---------- 轮播定宽：补齐到最宽一帧 ----------
+const unevenSlots = [
+  { id: "s1", kind: "account", metric: "balance", accountId: 1 },
+  { id: "s2", kind: "account", metric: "quota", accountId: 2 },
+];
+const rawFrames = renderMenubar(
+  N({ ...base, rotateFixedWidth: false, titleMode: "rotate", slots: unevenSlots }),
+  data
+).titles;
+const paddedFrames = renderMenubar(
+  N({ ...base, rotateFixedWidth: true, titleMode: "rotate", slots: unevenSlots }),
+  data
+).titles;
+const widest = Math.max(...rawFrames.map(displayWidth));
+eq([rawFrames.length, paddedFrames.length], [2, 2], "two rotation frames");
+eq(paddedFrames.map(displayWidth), [widest, widest], "every frame padded to the widest");
+eq(paddedFrames[1], rawFrames[1], "widest frame untouched");
+eq(paddedFrames[1].includes("\u00a0"), false, "widest frame has no padding char");
+eq(
+  paddedFrames.map((t) => t.replace(/\u00a0+$/, "")),
+  rawFrames,
+  "padding only appends, content unchanged"
+);
+eq(
+  renderMenubar(
+    N({
+      ...base,
+      rotateFixedWidth: true,
+      titleMode: "rotate",
+      slots: [{ id: "s1", kind: "account", metric: "balance", accountId: 1 }],
+    }),
+    data
+  ).titles,
+  ["ustc $91.08"],
+  "single frame not padded"
+);
+eq(
+  [displayWidth("日本"), displayWidth("ab"), displayWidth("¥")],
+  [4, 2, 1],
+  "displayWidth counts CJK as 2"
 );
 
 console.log(`\n${pass} passed, ${fail} failed`);
