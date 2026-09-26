@@ -324,6 +324,12 @@ export function displayWidth(text: string): number {
 const NBSP = "\u00a0";
 
 /**
+ * 窄空格（U+2009）。极简模式一帧里塞的数字最多，分隔符两侧还用普通空格会显得松散，
+ * 换成窄空格后数字与分隔符之间仍留空隙，但明显更紧。
+ */
+const THIN = "\u2009";
+
+/**
  * 轮播时各帧长短不同会让菜单栏项左右跳动（名字长短、缺某个指标都会变）。
  * 菜单栏项由系统右对齐排布，所以把每帧尾部补不换行空格到同一宽度后，
  * 项的盒子宽度恒定，帧内文字起点也随之恒定，看起来就是「不动」。
@@ -398,6 +404,8 @@ function buildMenu(cfg: MenubarConfig, data: MenubarData, sep: string): MenubarM
  */
 export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRender {
   const sep = ` ${cfg.separator} `;
+  // 极简模式（只留数字）用窄空格分隔：数字与「·」之间更紧凑
+  const tightSep = `${THIN}${cfg.separator}${THIN}`;
   const accountSlots = cfg.slots.filter((s) => s.kind === "account");
   const aggregateSlots = cfg.slots.filter((s) => s.kind === "aggregate");
 
@@ -413,7 +421,7 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
       const parts = cfg.slots
         .map((s) => slotText(s, data, { minimal: true, symbol: cfg.minimalSymbol }))
         .filter((x): x is string => x !== null);
-      if (parts.length > 0) titles.push(prefix + parts.join(sep));
+      if (parts.length > 0) titles.push(prefix + parts.join(tightSep));
     } else if (cfg.titleMode === "rotate") {
       // 轮播：一帧内不混多个 key，这样同一 baseUrl 的多把 key 在时间上分开出现
       const aggText = aggregateSlots

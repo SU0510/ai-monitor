@@ -137,6 +137,9 @@ export async function loadData(): Promise<void> {
   todayByAccount.value = accMap;
 }
 
+/** 托盘下拉菜单「全部刷新」的广播事件名（与 Rust 侧 tray.rs 的常量一致） */
+export const EVENT_REFRESH_ALL_REQUESTED = "refresh-all-requested";
+
 export async function refreshAll(): Promise<{ ok: number; failed: number; errors: string[] }> {
   if (collecting.value) return { ok: 0, failed: 0, errors: [] };
   collecting.value = true;

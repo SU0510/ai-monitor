@@ -43,11 +43,6 @@ export const EVENT_MENUBAR_PUSH_REQUESTED = "menubar-push-requested";
 /** 当前配置（设置页与托盘共用同一份，改完立即生效） */
 export const menubarConfig = ref<MenubarConfig>(defaultMenubarConfig());
 
-let rotationTimer: ReturnType<typeof setInterval> | null = null;
-/** 最近一次渲染结果，供轮播只换标题时复用 */
-let lastRender: MenubarRender | null = null;
-let rotationIndex = 0;
-
 export async function loadMenubarConfigStore(): Promise<MenubarConfig> {
   const raw = await getSetting(MENUBAR_CONFIG_KEY);
   let parsed: unknown = null;
@@ -118,7 +113,7 @@ export function renderMenubarNow(): MenubarRender {
   return renderMenubar(menubarConfig.value, buildMenubarData());
 }
 
-/** 把当前配置与数据推给托盘（Rust 侧只负责套用，不做任何格式化） */
+/** 把当前配置与数据推给托盘（Rust 侧只负责套用与轮播，不做任何格式化） */
 export async function pushMenubar(): Promise<void> {
   // 每个窗口各自持有一份内存配置，而定时推送只发生在灵动岛窗口里；
   // 若这里直接用内存值，设置窗口改完 30 秒后就会被灵动岛的旧值覆盖回默认，
@@ -126,48 +121,18 @@ export async function pushMenubar(): Promise<void> {
   await loadMenubarConfigStore();
   const cfg = menubarConfig.value;
   const render = renderMenubar(cfg, buildMenubarData());
-  lastRender = render;
-  rotationIndex = 0;
-  const title = cfg.showTitle ? (render.titles[0] ?? null) : null;
   try {
     await invoke("set_tray_display", {
-      title,
+      // 全部候选帧一起交给 Rust：轮播在 Rust 侧跑，不受 webview 是否可见影响
+      titles: cfg.showTitle ? render.titles : [],
       tooltip: render.tooltip,
       // 标题与图标都关掉会让菜单栏项彻底消失、应用再也点不到，所以保底留图标
-      showIcon: cfg.showIcon || !title,
+      showIcon: cfg.showIcon || render.titles.length === 0,
       showTitle: cfg.showTitle,
+      rotateSecs: cfg.rotateSecs,
       items: render.menu,
     });
   } catch {
     // 托盘不可用（如 Linux 无托盘）不应影响主流程
-  }
-  // 推送完顺手（重）启轮播。必须放在这里而不是由调用方在外面调：
-  // 推的是异步的，调用方要是没 await，外面调 restartRotation 时 lastRender 还是 null，
-  // 轮播就直接不启动了（表现为菜单栏一直停在第一帧）。
-  restartRotation();
-}
-
-/**
- * 轮播标题：只换文字，不重建菜单（重建菜单会在菜单被打开时闪一下）。
- * 标题为拆分模式时无需轮播。
- */
-function restartRotation(): void {
-  stopRotation();
-  const cfg = menubarConfig.value;
-  const render = lastRender;
-  if (cfg.titleMode !== "rotate" || !cfg.showTitle) return;
-  if (!render || render.titles.length <= 1) return;
-  rotationTimer = setInterval(() => {
-    const r = lastRender;
-    if (!r || r.titles.length <= 1) return;
-    rotationIndex = (rotationIndex + 1) % r.titles.length;
-    void invoke("set_tray_title", { title: r.titles[rotationIndex] }).catch(() => null);
-  }, cfg.rotateSecs * 1000);
-}
-
-export function stopRotation(): void {
-  if (rotationTimer) {
-    clearInterval(rotationTimer);
-    rotationTimer = null;
   }
 }

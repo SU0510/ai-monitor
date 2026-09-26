@@ -50,6 +50,8 @@ const base = {
 const N = (o) => normalizeMenubarConfig(o);
 
 // ---------- 极简模式 ----------
+// 极简模式的分隔符两侧是窄空格（U+2009），比普通空格更紧凑
+const TN = "\u2009";
 const mm = N({
   ...base,
   minimal: true,
@@ -67,14 +69,20 @@ eq(
 );
 eq(
   renderMenubar(mm, data).titles,
-  ["$91.1 · $82.6 · 10% · 38%"],
+  [`$91.1${TN}·${TN}$82.6${TN}·${TN}10%${TN}·${TN}38%`],
   "minimal, symbol, 1 decimal, all slots"
 );
 eq(
   renderMenubar({ ...mm, minimalSymbol: false }, data).titles,
-  ["91.1 · 82.6 · 10% · 38%"],
+  [`91.1${TN}·${TN}82.6${TN}·${TN}10%${TN}·${TN}38%`],
   "minimal, no symbol"
 );
+eq(
+  renderMenubar(mm, data).titles[0].includes(" · "),
+  false,
+  "minimal uses thin space, not a full space"
+);
+eq(displayWidth(TN), 1, "thin space counts as one cell");
 eq(renderMenubar(mm, data).overflow, 0, "minimal never folds");
 eq(
   renderMenubar(
@@ -89,7 +97,7 @@ eq(
     }),
     data
   ).titles,
-  ["$91.1 · -$1.2 · 1.3K"],
+  [`$91.1${TN}·${TN}-$1.2${TN}·${TN}1.3K`],
   "minimal cost '-', tokens bare"
 );
 eq(formatMoney1(-5.16, "USD", true), "-$5.2", "formatMoney1 neg w/ symbol");

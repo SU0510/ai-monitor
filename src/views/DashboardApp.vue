@@ -6,13 +6,29 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import AccountsTab from "../components/AccountsTab.vue";
 import UsageTab from "../components/UsageTab.vue";
 import SettingsTab from "../components/SettingsTab.vue";
-import { ensureData, collecting, refreshAll, showToast, toast, lastErrors } from "../core/dashboardStore";
+import {
+  ensureData,
+  collecting,
+  refreshAll,
+  showToast,
+  toast,
+  lastErrors,
+} from "../core/dashboardStore";
 import { EVENT_BALANCE_UPDATED, startAutoCollect } from "../core/collector";
+import { getSetting, setSetting } from "../core/db";
 
 const { t } = useI18n();
 
 type Tab = "accounts" | "usage" | "settings";
+const TABS: Tab[] = ["accounts", "usage", "settings"];
+const DASHBOARD_TAB_KEY = "dashboard_tab";
 const tab = ref<Tab>("accounts");
+
+/** 记住上次看的标签页，重启后回到原处而不是每次都跳回「账户」 */
+async function selectTab(next: Tab): Promise<void> {
+  tab.value = next;
+  await setSetting(DASHBOARD_TAB_KEY, next).catch(() => null);
+}
 
 async function refreshAllWrap(): Promise<void> {
   try {
@@ -33,14 +49,15 @@ async function refreshAllWrap(): Promise<void> {
 }
 
 function hidePanel(): void {
-  void invoke("hide_window", { label: "dashboard" });
-  // 面板隐藏后回归灵动岛
-  void invoke("show_window", { label: "overlay" });
+  // 面板显隐与岛的状态由 Rust 一次性同步（岛窗口不隐藏，它要留着跑定时器）
+  void invoke("hide_dashboard_command");
 }
 
 let unlisten: UnlistenFn | null = null;
 onMounted(async () => {
   await ensureData();
+  const saved = await getSetting(DASHBOARD_TAB_KEY).catch(() => null);
+  if (saved && TABS.includes(saved as Tab)) tab.value = saved as Tab;
   unlisten = await listen(EVENT_BALANCE_UPDATED, () => void ensureData());
   startAutoCollect();
 });
@@ -66,11 +83,11 @@ onUnmounted(() => {
 
     <nav class="tabs">
       <button
-        v-for="tt in ['accounts', 'usage', 'settings'] as Tab[]"
+        v-for="tt in TABS"
         :key="tt"
         class="tab"
         :class="{ active: tab === tt }"
-        @click="tab = tt"
+        @click="selectTab(tt)"
       >
         {{ t(`dashboard.tabs.${tt}`) }}
       </button>

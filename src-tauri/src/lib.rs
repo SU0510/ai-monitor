@@ -44,47 +44,52 @@ pub fn run() {
 
             tray::create_tray(app)?;
 
+            // 恢复持久化的偏好：悬浮窗是否显示存在 settings 表里，但要在这里就生效，
+            // 不能等前端设置页挂载（不打开设置页就永远不会写回），否则关了悬浮窗重启又冒出来。
+            let overlay_on = tauri::async_runtime::block_on(secret::read_setting(
+                app.handle(),
+                "overlay_enabled",
+            ))
+            .map(|v| v != "0")
+            .unwrap_or(true);
+            tray::restore_overlay_pref(app.handle(), overlay_on);
+
             // 启动统一代理（本地 HTTP，自动记录 token 用量）
             proxy::start(app.handle().clone());
 
             let handle = app.handle().clone();
-            let handle2 = app.handle().clone();
 
             // 关闭窗口 = 隐藏到托盘，进程常驻
-            // dashboard 关闭 -> 隐藏 + 回归灵动岛
+            // dashboard 关闭 -> 收面板 + 把岛还回来（岛窗口本身不隐藏，它承载着定时器）
             if let Some(w) = app.get_webview_window("dashboard") {
                 let w2 = w.clone();
+                let h = handle.clone();
                 w.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = w2.hide();
-                        // 面板隐藏后回归灵动岛；用户把悬浮窗关掉了就不再弹回来
-                        if tray::is_overlay_enabled(&handle) {
-                            if let Some(ov) = handle.get_webview_window("overlay") {
-                                let _ = ov.show();
-                            }
-                        }
+                        tray::hide_dashboard(&h);
                     }
                 });
             }
+            // 岛窗口被关（Cmd+W 等）等同于「关掉悬浮窗」：记住偏好，窗口继续留着跑定时器
             if let Some(w) = app.get_webview_window("overlay") {
-                let w2 = w.clone();
+                let h = handle.clone();
                 w.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
-                        let _ = w2.hide();
-                        // 岛隐藏时面板也进托盘
-                        if let Some(d) = handle2.get_webview_window("dashboard") {
-                            let _ = d.hide();
-                        }
+                        tray::disable_overlay(&h);
                     }
                 });
             }
 
-            // 首次启动显示主面板（引导添加账户）；后续由托盘/悬浮卡控制
-            if let Some(d) = app.get_webview_window("dashboard") {
-                let _ = d.show();
-                let _ = d.set_focus();
+            // 仅首次启动（还没添加账户）自动弹出主面板引导；之后启动只留菜单栏/灵动岛，
+            // 不再每次都把面板盖上来打断用户。面板随时可以从托盘菜单打开。
+            if !tauri::async_runtime::block_on(secret::has_accounts(app.handle())) {
+                if let Some(d) = app.get_webview_window("dashboard") {
+                    let _ = d.show();
+                    let _ = d.set_focus();
+                }
             }
             Ok(())
         })
@@ -94,8 +99,8 @@ pub fn run() {
             commands::delete_secret,
             commands::set_proxy_secret,
             tray::set_tray_display,
-            tray::set_tray_title,
             tray::set_overlay_enabled,
+            tray::hide_dashboard_command,
             commands::show_window,
             commands::hide_window,
             commands::toggle_window,

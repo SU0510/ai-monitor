@@ -20,12 +20,12 @@ import {
   lastErrors,
   fmt,
   displayCost,
+  EVENT_REFRESH_ALL_REQUESTED,
 } from "../core/dashboardStore";
 import { primaryQuota, quotaView, type QuotaView } from "../core/quota";
 import {
   loadMenubarConfigStore,
   pushMenubar,
-  stopRotation,
   EVENT_MENUBAR_PUSH_REQUESTED,
 } from "../core/menubarStore";
 import { startAutoCollect, EVENT_BALANCE_UPDATED } from "../core/collector";
@@ -34,6 +34,9 @@ import { i18n } from "../i18n";
 const win = getCurrentWindow();
 const { t } = useI18n();
 const isZh = () => i18n.global.locale.value === "zh";
+
+/** Rust 侧（tray.rs）同步「岛该不该渲染」的事件名 */
+const EVENT_OVERLAY_ENABLED_CHANGED = "overlay-enabled-changed";
 
 // 灵动岛三态尺寸（逻辑像素）
 const CAPSULE_W = 320;
@@ -50,6 +53,13 @@ const lowThreshold = ref(20);
 
 const lowBalance = computed(() => totalBalance.value <= lowThreshold.value);
 
+/**
+ * 岛是否渲染。关掉时窗口仍在（它承载采集与托盘推送的定时器），
+ * 只是不画任何东西——窗口本来就是透明的，于是视觉上等同不存在。
+ * 状态由 Rust 侧统一同步（EVENT_OVERLAY_ENABLED_CHANGED）。
+ */
+const islandOn = ref(true);
+
 // 状态
 const mode = ref<Mode>("capsule");
 const edgeSide = ref<"left" | "right" | null>(null);
@@ -59,6 +69,8 @@ let suppressSnapUntil = 0;
 let unlistenEvent: UnlistenFn | null = null;
 let unlistenUsage: UnlistenFn | null = null;
 let unlistenMenubar: UnlistenFn | null = null;
+let unlistenRefresh: UnlistenFn | null = null;
+let unlistenIsland: UnlistenFn | null = null;
 let unlistenMove: UnlistenFn | null = null;
 let unlistenFocus: UnlistenFn | null = null;
 let moveTimer: number | null = null;
@@ -332,8 +344,10 @@ function openDashboard(): void {
   void invoke("hide_window", { label: "overlay" });
   void invoke("show_window", { label: "dashboard" });
 }
+/** 「—」按钮 = 关掉岛：和设置里的开关是同一个偏好，会被记住 */
 function hideOverlay(): void {
-  void invoke("hide_window", { label: "overlay" });
+  void invoke("set_overlay_enabled", { enabled: false });
+  void setSetting("overlay_enabled", "0");
 }
 
 onMounted(async () => {
@@ -341,7 +355,14 @@ onMounted(async () => {
   // 先读菜单栏配置，避免首次推送用的是默认值
   await loadMenubarConfigStore();
   await loadData();
-  // 轮播由 pushMenubar 自己启动（灵动岛是唯一的托盘写入者，两个窗口各转各的会互相打乱）
+
+  // 岛是否渲染由 Rust 侧同步；这里先按库里的偏好落一个初始值，再听 Rust 的变更通知
+  islandOn.value = (await getSetting("overlay_enabled").catch(() => null)) !== "0";
+  unlistenIsland = await listen<boolean>(EVENT_OVERLAY_ENABLED_CHANGED, ({ payload }) => {
+    islandOn.value = payload;
+    // 被收起时顺手把展开态收回胶囊，下次打开就是干净状态
+    if (!payload && mode.value === "expanded") void collapseToCapsule();
+  });
 
   // 恢复位置与模式
   try {
@@ -374,12 +395,14 @@ onMounted(async () => {
 
   // 拖动结束贴边判断
   unlistenMove = await win.onMoved(() => {
+    if (!islandOn.value) return;
     if (moveTimer) window.clearTimeout(moveTimer);
     moveTimer = window.setTimeout(() => void maybeSnapToEdge(), 350);
   });
 
   // 点击屏幕其他地方 -> 收回胶囊（兜底）
   unlistenFocus = await win.onFocusChanged(({ payload }) => {
+    if (!islandOn.value) return;
     if (!payload && mode.value === "expanded" && !animating.value) void collapseToCapsule();
   });
 
@@ -402,6 +425,9 @@ onMounted(async () => {
     })();
   });
 
+  // 托盘下拉菜单点「全部刷新」：灵动岛窗口常驻，由它执行一次全量采集
+  unlistenRefresh = await listen(EVENT_REFRESH_ALL_REQUESTED, () => void refresh());
+
   // 兜底：每 30 秒刷新本地数据
   uiTimer = setInterval(() => void loadData(), 30_000);
 
@@ -409,6 +435,8 @@ onMounted(async () => {
   cursorTimer = setInterval(() => {
     void (async () => {
       if (animating.value) return;
+      // 岛关掉时不碰窗口：否则会把隐藏状态的窗口来回缩放，还会写坏保存的位置
+      if (!islandOn.value) return;
       const visible = await win.isVisible().catch(() => false);
       if (!visible) return;
       let inside = false;
@@ -456,10 +484,11 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  stopRotation();
   unlistenEvent?.();
   unlistenUsage?.();
   unlistenMenubar?.();
+  unlistenRefresh?.();
+  unlistenIsland?.();
   unlistenMove?.();
   unlistenFocus?.();
   if (moveTimer) window.clearTimeout(moveTimer);
@@ -470,8 +499,10 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <!-- 岛关掉时什么都不画：窗口透明，于是视觉上等于不存在（但窗口仍活着跑定时器） -->
   <!-- 边缘小半圆 -->
   <div
+    v-if="islandOn"
     v-show="mode === 'edge'"
     class="island edge"
     :class="[edgeSide === 'right' ? 'edge-right' : 'edge-left', { low: lowBalance }]"
@@ -486,6 +517,7 @@ onUnmounted(() => {
 
   <!-- 灵动岛主体：胶囊/展开（抽屉式） -->
   <div
+    v-if="islandOn"
     v-show="mode !== 'edge'"
     class="island main"
     :class="{ low: lowBalance }"

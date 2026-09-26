@@ -96,6 +96,48 @@ fn setting_key(account: &str) -> String {
     format!("secret:{account}")
 }
 
+/// 读一条 settings 记录。启动时恢复用户偏好要用它——偏好本来存在同一个库里，
+/// 但要等前端窗口挂载才会被写回 Rust 内存，那样「关掉悬浮窗 -> 重启」又会自己冒出来。
+pub async fn read_setting(app: &tauri::AppHandle, key: &str) -> Option<String> {
+    let store = app.try_state::<SecretStore>()?;
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(&store.pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// 写一条 settings 记录（供托盘手动切换悬浮窗后把偏好持久化，与前端写的是同一张表）
+pub async fn write_setting(app: &tauri::AppHandle, key: &str, value: &str) -> Result<(), String> {
+    let Some(store) = app.try_state::<SecretStore>() else {
+        return Err("状态未初始化".into());
+    };
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(&store.pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| format!("保存设置失败: {e}"))
+}
+
+/// 是否已经添加过账户。`accounts` 表由前端建库时创建，全新安装时还不存在，
+/// 这种情况下按「没有账户」处理（正好也是首次启动要引导添加账户的场景）。
+pub async fn has_accounts(app: &tauri::AppHandle) -> bool {
+    let Some(store) = app.try_state::<SecretStore>() else {
+        return false;
+    };
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts")
+        .fetch_one(&store.pool)
+        .await
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
 fn encrypt_with_key(key: &[u8; 32], plain: &str) -> Result<String, String> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
     let mut nonce_bytes = [0u8; NONCE_LEN];
