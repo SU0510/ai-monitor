@@ -165,6 +165,47 @@ async function posSettingKey(): Promise<string> {
   return `overlay_pos_${mon?.name ?? "default"}`;
 }
 
+/**
+ * 光标位置轮询：鼠标进窗口就展开、移走就收回（比 CSS hover 可靠）。
+ * 只在岛渲染时开启——岛关着的时候没有任何东西需要响应鼠标，而窗口本身仍在跑，
+ * 200ms 一次的轮询会白白把主进程的空闲占用顶上去，所以关岛即停。
+ */
+function startCursorWatch(): void {
+  if (cursorTimer) return;
+  cursorTimer = setInterval(() => {
+    void (async () => {
+      if (animating.value || !islandOn.value) return;
+      const visible = await win.isVisible().catch(() => false);
+      if (!visible) return;
+      let inside = false;
+      try {
+        const cur = await cursorPosition();
+        const pos = await win.outerPosition();
+        const size = await win.outerSize();
+        inside =
+          cur.x >= pos.x &&
+          cur.x <= pos.x + size.width &&
+          cur.y >= pos.y &&
+          cur.y <= pos.y + size.height;
+      } catch {
+        return;
+      }
+      if (inside && !dragging) {
+        if (mode.value === "capsule") void expand();
+        else if (mode.value === "edge") void expandFromEdge();
+      } else if (!inside) {
+        if (mode.value === "expanded") void collapseToCapsule();
+      }
+    })();
+  }, 200);
+}
+
+function stopCursorWatch(): void {
+  if (!cursorTimer) return;
+  window.clearInterval(cursorTimer);
+  cursorTimer = null;
+}
+
 async function savePos(): Promise<void> {
   const m = await getLogicalMetrics();
   const x = Math.max(0, Math.min(m.x, Math.max(0, m.screenW - m.w)));
@@ -359,6 +400,9 @@ onMounted(async () => {
   islandOn.value = (await getSetting("overlay_enabled").catch(() => null)) !== "0";
   unlistenIsland = await listen<boolean>(EVENT_OVERLAY_ENABLED_CHANGED, ({ payload }) => {
     islandOn.value = payload;
+    // 岛开/关跟着起停光标轮询（面板打开时 Rust 也会发 false，一并停掉）
+    if (payload) startCursorWatch();
+    else stopCursorWatch();
     // 被收起时顺手把展开态收回胶囊，下次打开就是干净状态
     if (!payload && mode.value === "expanded") void collapseToCapsule();
   });
@@ -430,35 +474,8 @@ onMounted(async () => {
   // 兜底：每 30 秒刷新本地数据
   uiTimer = setInterval(() => void loadData(), 30_000);
 
-  // 光标位置轮询：鼠标在窗口内直接展开，移走自动收回（可靠 hover）
-  cursorTimer = setInterval(() => {
-    void (async () => {
-      if (animating.value) return;
-      // 岛关掉时不碰窗口：否则会把隐藏状态的窗口来回缩放，还会写坏保存的位置
-      if (!islandOn.value) return;
-      const visible = await win.isVisible().catch(() => false);
-      if (!visible) return;
-      let inside = false;
-      try {
-        const cur = await cursorPosition();
-        const pos = await win.outerPosition();
-        const size = await win.outerSize();
-        inside =
-          cur.x >= pos.x &&
-          cur.x <= pos.x + size.width &&
-          cur.y >= pos.y &&
-          cur.y <= pos.y + size.height;
-      } catch {
-        return;
-      }
-      if (inside && !dragging) {
-        if (mode.value === "capsule") void expand();
-        else if (mode.value === "edge") void expandFromEdge();
-      } else if (!inside) {
-        if (mode.value === "expanded") void collapseToCapsule();
-      }
-    })();
-  }, 200);
+  // 光标轮询只在岛真的渲染时才开（见 startCursorWatch 注释）
+  if (islandOn.value) startCursorWatch();
 
   // 拖动抑制：按下时不让 hover 误展开（胶囊可直接拖动）
   const onDown = () => {
@@ -492,7 +509,7 @@ onUnmounted(() => {
   unlistenFocus?.();
   if (moveTimer) window.clearTimeout(moveTimer);
   if (uiTimer) window.clearInterval(uiTimer);
-  if (cursorTimer) window.clearInterval(cursorTimer);
+  stopCursorWatch();
   if (hoverTimer) window.clearTimeout(hoverTimer);
 });
 </script>
