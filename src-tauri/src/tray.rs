@@ -20,23 +20,22 @@ pub struct TrayMenuItem {
     pub enabled: bool,
 }
 
-/// 托盘本地状态：创建时记住图标（供「隐藏图标」后再恢复），
-/// 以及上一次菜单内容的签名（内容没变就不重建菜单）。
+/// 托盘本地状态：上一次菜单内容的签名（内容没变就不重建菜单）。
+/// 图标不缓存——它借用自 App，塞进 `manage` 的 'static 状态里过不了编译，
+/// 需要时直接问 `app.default_window_icon()` 要。
 #[derive(Default)]
 pub struct TrayState {
-    pub icon: Mutex<Option<Image<'static>>>,
     pub menu_sig: Mutex<String>,
 }
 
 pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
-    let icon = app.default_window_icon().cloned();
-    app.manage(TrayState {
-        icon: Mutex::new(icon.clone()),
-        menu_sig: Mutex::new(String::new()),
-    });
+    app.manage(TrayState::default());
 
     let menu = build_menu(app.handle(), &[])?;
-    let icon = icon.unwrap_or_else(|| Image::new(&[], 0, 0));
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .unwrap_or_else(|| Image::new(&[], 0, 0));
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
@@ -68,7 +67,7 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 /// 动态条目 + 分隔线 + 固定操作项。固定项文案目前仍是中文（Rust 侧未接 i18n）。
-fn build_menu(app: &AppHandle, items: &[TrayMenuItem]) -> tauri::Result<Menu> {
+fn build_menu(app: &AppHandle, items: &[TrayMenuItem]) -> tauri::Result<Menu<tauri::Wry>> {
     let mut owned: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
     for it in items {
         owned.push(Box::new(MenuItem::with_id(
@@ -154,11 +153,8 @@ pub fn set_tray_display(
     // 图标与标题全都不显示的话，菜单栏项会彻底消失、应用再也点不到，所以那种情况必须留图标
     if !show_icon && text.is_some() {
         let _ = tray.set_icon(None);
-    } else if let Some(state) = app.try_state::<TrayState>() {
-        let restored = state.icon.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(icon) = restored {
-            let _ = tray.set_icon(Some(icon));
-        }
+    } else if let Some(icon) = app.default_window_icon().cloned() {
+        let _ = tray.set_icon(Some(icon));
     }
     Ok(())
 }
