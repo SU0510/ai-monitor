@@ -29,8 +29,9 @@ const mk = (id, label, balance, spent) => ({
     "USD"
   ),
 });
+// 夹具里的账户名一律用虚构值：仓库是公开的，别写真实账户名
 const data = {
-  accounts: [mk(1, "ustc", 91.0790588, 3.0599), mk(2, "ustc-lhy", 82.595778, 11.25)],
+  accounts: [mk(1, "demo-a", 91.0790588, 3.0599), mk(2, "demo-b", 82.595778, 11.25)],
   totals: { currency: "CNY", balance: 173.67, todayCost: 13.95, tokens: 2660, quota: null },
   collecting: false,
   hasError: false,
@@ -125,7 +126,7 @@ eq(
 // ---------- 轮播：同一 key 的信息归到同一帧 ----------
 eq(
   renderMenubar(N({ ...base, titleMode: "rotate", slots: mm.slots }), data).titles,
-  ["ustc $91.1 · 3h 10%", "ustc-lhy $82.6 · 3h 38%"],
+  ["demo-a $91.1 · 3h 10%", "demo-b $82.6 · 3h 38%"],
   "rotate groups per key"
 );
 eq(
@@ -141,7 +142,7 @@ eq(
     }),
     data
   ).titles,
-  ["ustc-lhy $82.60", "ustc 3h 10% · $91.08"],
+  ["demo-b $82.60", "demo-a 3h 10% · $91.08"],
   "scattered slots group per key"
 );
 eq(
@@ -157,7 +158,7 @@ eq(
     }),
     data
   ).titles,
-  ["¥173.67", "ustc $91.08 · 3h 10%"],
+  ["¥173.67", "demo-a $91.08 · 3h 10%"],
   "aggregate frame first"
 );
 eq(
@@ -172,7 +173,7 @@ eq(
     }),
     data
   ).titles,
-  ["ustc $91.08"],
+  ["demo-a $91.08"],
   "deleted key frame dropped"
 );
 eq(
@@ -194,7 +195,7 @@ eq(
 // ---------- 并排模式保持原样 ----------
 eq(
   renderMenubar(N({ ...base, titleMode: "segments", slots: mm.slots }), data).titles,
-  ["ustc $91.1 · ustc-lhy $82.6 · ustc 3h 10% +1"],
+  ["demo-a $91.1 · demo-b $82.6 · demo-a 3h 10% +1"],
   "segments unchanged"
 );
 eq(
@@ -215,8 +216,8 @@ eq(
   renderMenubar(menuCfg({}), data).menu,
   [
     { id: "agg", label: "¥173.67", enabled: true },
-    { id: "acc-1", label: "ustc $91.08 · 3h 10%", enabled: true },
-    { id: "acc-2", label: "ustc-lhy $82.60", enabled: true },
+    { id: "acc-1", label: "demo-a $91.08 · 3h 10%", enabled: true },
+    { id: "acc-2", label: "demo-b $82.60", enabled: true },
   ],
   "menu lists every enabled slot, one row per key"
 );
@@ -269,7 +270,7 @@ eq(
     }),
     data
   ).titles,
-  ["ustc $91.08"],
+  ["demo-a $91.08"],
   "single frame not padded"
 );
 eq(

@@ -43,7 +43,7 @@
 - **时间窗口限额（3 小时限额）**：灵动岛展开区与面板账户卡片显示各账户的窗口额度进度条、
   已用百分比、剩余额度与重置倒计时（<70% 绿 / 70~90% 黄 / ≥90% 红）。
   数据取自余额接口响应里的窗口额度，目前适配 LiteLLM `/key/info` 的
-  `info.budget_limits` + `info.budget_limits_usage`（如 USTC `api.llm.ustc.edu.cn`），
+  `info.budget_limits` + `info.budget_limits_usage`（例如某高校自建的 LiteLLM 网关），
   默认展示 `3h` 窗口。展示哪些窗口、额度列表路径与已用金额路径都可以在
   「自定义 API → 高级设置 → 时间窗口限额」里改（填 `3h, 12h` 可同时展示多个窗口）；
   响应里没有对应路径时静默不展示限额，不影响原有余额查询。

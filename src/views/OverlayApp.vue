@@ -583,7 +583,7 @@ onUnmounted(() => {
               <span class="m-tok">{{ compactTok(a.tokens) }} tok</span>
             </div>
           </div>
-          <!-- 时间窗口额度（如 USTC LiteLLM 的 3 小时限额） -->
+          <!-- 时间窗口额度（LiteLLM 的 3 小时限额） -->
           <div v-if="a.quota" class="acc-quota">
             <div class="quota-bar">
               <i :class="a.quota.level" :style="{ width: a.quota.barPct + '%' }"></i>
