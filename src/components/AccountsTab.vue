@@ -380,6 +380,9 @@ async function addSingleAccount(providerId: string, name: string, key: string): 
     throw e;
   }
   if (provider?.balanceSupported) {
+    // 必须先把数据读回来再找：刚插入的账户还不在 accounts.value 里，
+    // 直接 find 永远找不到，结果是「新加的账户余额一直是空的，要等下轮自动采集」。
+    await loadData();
     const acc = accounts.value.find((a) => a.id === id);
     if (acc) await collectAccount(acc);
   }

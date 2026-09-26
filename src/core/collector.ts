@@ -94,28 +94,54 @@ export async function collectAccount(account: AccountRow): Promise<BalanceInfo> 
 
 /** 全量采集（跳过未启用/不支持自动查询的账户） */
 export async function collectAll(): Promise<{ ok: number; failed: number; errors: string[] }> {
+  // 面板窗口和灵动岛窗口都会触发采集，用户也可能连点「全部刷新」。
+  // 并发跑会重复打平台余额接口、重复写快照，所以同一时刻只允许一轮。
+  if (collectInFlight) return collectInFlight;
+  collectInFlight = doCollectAll().finally(() => {
+    collectInFlight = null;
+  });
+  return collectInFlight;
+}
+
+let collectInFlight: Promise<{ ok: number; failed: number; errors: string[] }> | null = null;
+
+async function doCollectAll(): Promise<{ ok: number; failed: number; errors: string[] }> {
   await emit(EVENT_COLLECT_START);
-  const accounts = await listAccounts();
   let ok = 0;
   let failed = 0;
   const errors: string[] = [];
 
-  for (const account of accounts) {
-    if (!account.enabled) continue;
-    const provider = getProvider(account.provider_id);
-    if (!provider?.balanceSupported) continue;
-    try {
-      await collectAccount(account);
-      ok++;
-    } catch (e) {
-      failed++;
-      errors.push(`${account.name}: ${(e as Error).message || String(e)}`);
+  try {
+    const accounts = await listAccounts();
+    for (const account of accounts) {
+      if (!account.enabled) continue;
+      const provider = getProvider(account.provider_id);
+      if (!provider?.balanceSupported) continue;
+      try {
+        await collectAccount(account);
+        ok++;
+      } catch (e) {
+        failed++;
+        errors.push(`${account.name}: ${(e as Error).message || String(e)}`);
+      }
     }
+  } catch (e) {
+    // 连账户列表都读不出来（数据库异常）也算一次失败的尝试，别让异常穿透出去
+    failed++;
+    errors.push((e as Error).message || String(e));
   }
 
+  const attemptedAt = new Date().toISOString();
+  // 尝试时间与结果无论成败都记下来。只记成功时间的话，「所有账户都采集失败」
+  // 和「定时器压根没跑」在库里长得一模一样，排查时分不清是网络问题还是没触发。
+  await setSetting("last_collect_attempt_at", attemptedAt).catch(() => {});
+  await setSetting("last_collect_outcome", ok > 0 || failed === 0 ? "ok" : "fail").catch(() => {});
+  // last_collect_at 仍然是「最近一次确实拿到余额」的时间：采集去重和
+  // 「数据更新于」都靠它。失败时不推进，否则另一个窗口会以为刚采过而跳过重试。
   if (ok > 0) {
-    await setSetting("last_collect_at", new Date().toISOString());
+    await setSetting("last_collect_at", attemptedAt).catch(() => {});
   }
+
   await emit(EVENT_COLLECT_END, { ok, failed, errors });
   await emit(EVENT_BALANCE_UPDATED);
   await checkAlerts();
@@ -127,7 +153,9 @@ export async function collectAll(): Promise<{ ok: number; failed: number; errors
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;
-let scheduled = false; // 防止 async schedule 竞态导致重复定时器
+// 每次 startAutoCollect 递增的代号。旧一轮的续期闭包发现自己代号过期就直接退出，
+// 避免「改采集间隔时旧的一轮在飞、它的 finally 又把定时器装回去」导致双定时器。
+let generation = 0;
 
 /**
  * 启动定时采集。
@@ -139,16 +167,26 @@ let scheduled = false; // 防止 async schedule 竞态导致重复定时器
  * 使修改间隔设置后无需重启窗口即可生效（v0.1.4 之前写死 30 分钟，导致 1 分钟间隔不生效）。
  */
 export function startAutoCollect(): void {
-  if (timer || scheduled) return;
-  scheduled = true;
+  if (timer) return;
+  const gen = ++generation;
+
   const schedule = async () => {
-    // 若已被 stop/setInterval 清理，不再自我续期
-    if (!scheduled) return;
-    const intervalMs = (await getCollectIntervalMinutes()) * 60 * 1000;
-    if (!scheduled) return; // 等待读取期间被停止
-    timer = setTimeout(run, intervalMs);
+    if (gen !== generation) return;
+    let minutes = 30;
+    try {
+      minutes = await getCollectIntervalMinutes();
+    } catch (e) {
+      // 读间隔失败也必须继续排下一轮：之前这里一旦抛错就再也不会续期，
+      // 定时器静默死亡，界面上只剩「数据一直不更新」。
+      console.error("读取采集间隔失败，按 30 分钟继续", e);
+    }
+    if (gen !== generation) return;
+    timer = setTimeout(() => void run(), minutes * 60 * 1000);
   };
+
   const run = async () => {
+    if (gen !== generation) return;
+    timer = null;
     try {
       const intervalMs = (await getCollectIntervalMinutes()) * 60 * 1000;
       const lastStr = await getSetting("last_collect_at");
@@ -158,9 +196,11 @@ export function startAutoCollect(): void {
     } catch (e) {
       console.error("自动采集失败", e);
     } finally {
-      void schedule();
+      // 成功、失败、提前返回都要续期
+      if (gen === generation) void schedule();
     }
   };
+
   void schedule();
 }
 
@@ -168,7 +208,7 @@ export function startAutoCollect(): void {
 export async function setCollectIntervalMinutes(minutes: number): Promise<number> {
   const safe = Math.min(1440, Math.max(1, Math.floor(minutes)));
   await setSetting("collect_interval_minutes", String(safe));
-  // 停止旧定时器并重新调度（scheduled 标记保证不产生双定时器）
+  // 停止旧定时器并重新调度（generation 保证在飞的那一轮不会把定时器装回来）
   stopAutoCollect();
   startAutoCollect();
   return safe;
@@ -176,11 +216,11 @@ export async function setCollectIntervalMinutes(minutes: number): Promise<number
 
 /** 停止自动采集（仅供内部重调度使用） */
 function stopAutoCollect(): void {
+  generation++; // 让在飞的那一轮（含它的续期闭包）全部作废
   if (timer) {
     clearTimeout(timer);
     timer = null;
   }
-  scheduled = false;
 }
 
 export async function getCollectIntervalMinutes(): Promise<number> {

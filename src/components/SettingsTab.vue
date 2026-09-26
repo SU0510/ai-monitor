@@ -123,16 +123,19 @@ const savingProxySecret = ref(false);
 
 async function saveProxySecret(): Promise<void> {
   if (savingProxySecret.value) return;
+  // 输入框是空的（用户没动过 / 主动清空）时不能当作「保存空密钥」：
+  // 那等于把已配好的鉴权关掉，而用户点的是「保存」，意图明显相反。
+  // 真要关鉴权有专门的「清除」按钮。
+  if (proxySecret.value.trim().length === 0) {
+    showToast(t("dashboard.toast.proxySecretEmpty"));
+    return;
+  }
   savingProxySecret.value = true;
   try {
     await invoke("set_proxy_secret", { secret: proxySecret.value });
-    proxySecretEnabled.value = proxySecret.value.trim().length > 0;
+    proxySecretEnabled.value = true;
     proxySecret.value = "";
-    showToast(
-      proxySecretEnabled.value
-        ? t("dashboard.toast.proxySecretOk")
-        : t("dashboard.toast.proxySecretCleared")
-    );
+    showToast(t("dashboard.toast.proxySecretOk"));
   } catch (e) {
     showToast((e as Error).message || String(e));
   } finally {

@@ -102,10 +102,7 @@ pub fn restore_overlay_pref(app: &AppHandle, enabled: bool) {
 /// 设置岛是否显示：立刻生效，并记住偏好（前端同时写进 settings 做持久化）
 #[tauri::command]
 pub fn set_overlay_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
-    if let Some(state) = app.try_state::<OverlayPref>() {
-        *state.0.lock().unwrap_or_else(|e| e.into_inner()) = enabled;
-    }
-    sync_island(&app);
+    set_overlay_pref(&app, enabled);
     Ok(())
 }
 
@@ -322,19 +319,24 @@ pub fn hide_dashboard_command(app: AppHandle) {
 
 /// 关掉岛（托盘菜单 / 岛上的「—」按钮 / Cmd+W）。偏好写回 settings，重启后依然是关的。
 pub fn disable_overlay(app: &AppHandle) {
-    if let Some(state) = app.try_state::<OverlayPref>() {
-        *state.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
-    }
-    sync_island(app);
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = crate::secret::write_setting(&app, "overlay_enabled", "0").await;
-    });
+    set_overlay_pref(app, false);
 }
 
 fn toggle_overlay(app: &AppHandle) {
     // 以偏好为准而不是看窗口可见性：面板打开时岛是被临时收起的，看可见性会判断反
     let enabled = !is_overlay_enabled(app);
+    set_overlay_pref(app, enabled);
+}
+
+/// 全局快捷键（Cmd+Shift+O）走这里：和托盘菜单同一个入口，
+/// 会一并落盘偏好并 sync_island，避免出现「窗口看着关了、偏好还开着」的错位状态。
+#[tauri::command]
+pub fn toggle_overlay_command(app: AppHandle) {
+    toggle_overlay(&app);
+}
+
+/// 只改偏好 + 同步 + 落盘，不做任何窗口可见性判断
+fn set_overlay_pref(app: &AppHandle, enabled: bool) {
     if let Some(state) = app.try_state::<OverlayPref>() {
         *state.0.lock().unwrap_or_else(|e| e.into_inner()) = enabled;
     }

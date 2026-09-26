@@ -98,7 +98,14 @@ pub fn start(app: tauri::AppHandle) {
             return;
         }
 
-        let secret = load_secret(&db).await;
+        let secret = match load_secret(&db).await {
+            Ok(s) => s,
+            Err(e) => {
+                // 读不出来就不知道用户到底有没有配鉴权，绝不能当作「没配」把代理裸奔起来
+                eprintln!("[proxy] 读取代理密钥失败: {e}；为避免错误地关闭鉴权，本次不启动代理");
+                return;
+            }
+        };
         let secret_arc = Arc::new(RwLock::new(secret));
         app.manage(ProxySecretHandle(secret_arc.clone()));
         app.manage(ProxyDbHandle(db.clone()));
@@ -110,6 +117,20 @@ pub fn start(app: tauri::AppHandle) {
             db,
             secret: secret_arc,
             app_handle: app.clone(),
+        };
+
+        let router = Router::new()
+            .route("/v1/{*rest}", any(handle_default_catch))
+            .route("/{provider}/v1/{*rest}", any(handle_provider_catch))
+            .with_state(state.clone());
+
+        // 先绑定端口，成功之后再起清理任务：否则端口被占用时清理任务会永远挂着白跑
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PROXY_PORT)).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[proxy] 绑定端口 {PROXY_PORT} 失败（可能已被占用）: {e}");
+                return;
+            }
         };
 
         // 历史事件清理任务（每天一次）
@@ -124,18 +145,6 @@ pub fn start(app: tauri::AppHandle) {
             }
         });
 
-        let router = Router::new()
-            .route("/v1/{*rest}", any(handle_default_catch))
-            .route("/{provider}/v1/{*rest}", any(handle_provider_catch))
-            .with_state(state.clone());
-
-        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PROXY_PORT)).await {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("[proxy] 绑定端口 {PROXY_PORT} 失败（可能已被占用）: {e}");
-                return;
-            }
-        };
         eprintln!("[proxy] 本地代理已启动 http://127.0.0.1:{PROXY_PORT}/v1");
         if let Err(e) = axum::serve(listener, router).await {
             eprintln!("[proxy] 服务退出: {e}");
@@ -237,19 +246,24 @@ async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-async fn load_secret(db: &SqlitePool) -> String {
-    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'proxy_secret'")
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+/// 读代理密钥。返回 Result 而不是把它压成空串：空串等于「不鉴权」，
+/// 读失败时若静默返回空串，用户配好的鉴权就被悄悄关掉了。
+async fn load_secret(db: &SqlitePool) -> Result<String, sqlx::Error> {
+    let v =
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = 'proxy_secret'")
+            .fetch_optional(db)
+            .await?;
+    Ok(v.unwrap_or_default())
 }
 
 /// 运行时热更新代理密钥：持久化到 settings 表并立即替换内存中的密钥（无需重启代理）
 pub async fn set_proxy_secret(app: &tauri::AppHandle, secret: String) -> Result<(), String> {
+    // 用 try_state：代理任务若因建库/迁移失败而提前结束，这些 handle 根本没被 manage，
+    // app.state::<> 会直接 panic。这里改成返回可展示的错误。
     {
-        let db = app.state::<ProxyDbHandle>();
+        let Some(db) = app.try_state::<ProxyDbHandle>() else {
+            return Err("代理服务未就绪（数据库未连接），请重启应用后重试".into());
+        };
         sqlx::query(
             "INSERT INTO settings (key, value) VALUES ('proxy_secret', ?1)
              ON CONFLICT(key) DO UPDATE SET value = ?1",
@@ -260,7 +274,9 @@ pub async fn set_proxy_secret(app: &tauri::AppHandle, secret: String) -> Result<
         .map_err(|e| format!("保存代理密钥失败: {e}"))?;
     }
     {
-        let h = app.state::<ProxySecretHandle>();
+        let Some(h) = app.try_state::<ProxySecretHandle>() else {
+            return Err("代理服务未就绪（密钥状态未初始化），请重启应用后重试".into());
+        };
         let mut s = h.0.write().unwrap_or_else(|e| e.into_inner());
         *s = secret;
     }
@@ -388,10 +404,19 @@ async fn handle_catch(st: ProxyState, provider: String, rest: String, req: Reque
         .ok()
         .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(|s| s.to_string()));
 
-    // 透传全部请求头（含 x-api-key / anthropic-version 等），落掉 host 与代理鉴权头
+    // 透传全部请求头（含 x-api-key / anthropic-version 等），落掉这几类：
+    //   host                —— 必须由 reqwest 按上游地址重写
+    //   x-proxy-secret      —— 本代理自己的鉴权头，不能带给上游
+    //   content-length      —— body 可能已被 inject_stream_options 改写，长度由 hyper 按新 body 重算；
+    //                          若透传旧值，上游只会读旧长度的字节，请求体会被截断成非法 JSON
+    //   transfer-encoding   —— 同上，body 已是已知长度的整体，不能再声明 chunked
     let mut rb = st.client.request(method.clone(), &upstream);
     for (name, value) in headers.iter() {
-        if name != "host" && name != "x-proxy-secret" {
+        if name != "host"
+            && name != "x-proxy-secret"
+            && name != "content-length"
+            && name != "transfer-encoding"
+        {
             rb = rb.header(name, value);
         }
     }
@@ -477,11 +502,22 @@ fn inject_stream_options(provider: &str, rest: &str, is_stream: bool, body: Vec<
     }
     match serde_json::from_slice::<Value>(&body) {
         Ok(mut v) => {
-            if v.get("stream_options").is_none() {
-                v["stream_options"] = serde_json::json!({ "include_usage": true });
-                return serde_json::to_vec(&v).unwrap_or(body);
+            if v.get("stream_options").is_some() {
+                return body;
             }
-            body
+            // 必须是对象才能加字段。serde_json 对非对象做 v["k"] = ... 会 panic
+            // （index_or_insert 里直接 panic!），而合法 JSON 完全可以是数组/字符串/数字，
+            // 所以这里先判类型、非对象原样转发。
+            match v.as_object_mut() {
+                Some(obj) => {
+                    obj.insert(
+                        "stream_options".to_string(),
+                        serde_json::json!({ "include_usage": true }),
+                    );
+                    serde_json::to_vec(&v).unwrap_or(body)
+                }
+                None => body,
+            }
         }
         Err(_) => body,
     }
@@ -520,6 +556,34 @@ impl UsageTap {
             record_done: false,
         }
     }
+
+    /// 记账（幂等）。三种情况都要走这里，否则会漏账：
+    ///   1. 流正常读完（usage 在最后一个 chunk 里）
+    ///   2. 上游中途报错（usage 通常已经收到过了）
+    ///   3. 下游客户端提前断开（用户在对话界面点「停止」）——这时流不会被 poll 到 None，
+    ///      只能靠 Drop 兜底，否则最长最贵的那批请求全部不记账
+    fn finish(&mut self) {
+        if self.record_done {
+            return;
+        }
+        self.record_done = true;
+        let Some(usage) = self.parser.usage_listener.take() else {
+            return;
+        };
+        let st = self.st.clone();
+        let provider = self.provider.clone();
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        tauri::async_runtime::spawn(async move {
+            record_usage_to_db(&st, &provider, &api_key, model.as_deref(), usage).await;
+        });
+    }
+}
+
+impl Drop for UsageTap {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 impl Stream for UsageTap {
@@ -533,20 +597,13 @@ impl Stream for UsageTap {
                 this.parser.feed(&bytes);
                 Poll::Ready(Some(Ok(bytes)))
             }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(Some(Err(e))) => {
+                // 上游出错：把已经解析到的 usage 记下来再放行错误
+                this.finish();
+                Poll::Ready(Some(Err(e)))
+            }
             Poll::Ready(None) => {
-                if !this.record_done {
-                    this.record_done = true;
-                    if let Some(usage) = this.parser.usage_listener.take() {
-                        let st = this.st.clone();
-                        let provider = this.provider.clone();
-                        let api_key = this.api_key.clone();
-                        let model = this.model.clone();
-                        tauri::async_runtime::spawn(async move {
-                            record_usage_to_db(&st, &provider, &api_key, model.as_deref(), usage).await;
-                        });
-                    }
-                }
+                this.finish();
                 Poll::Ready(None)
             }
         }
@@ -970,5 +1027,31 @@ mod tests {
         let body5 = br#"{"model":"gpt-4o","stream":false}"#.to_vec();
         let out5 = inject_stream_options("openai", "chat/completions", false, body5);
         assert!(!out5.windows(14).any(|w| w == b"stream_options".as_slice()));
+    }
+
+    /// 请求体是合法 JSON 但不是对象时，旧实现会在 serde_json 内部 panic 掉整个进程
+    /// （`v["stream_options"] = ...` 走 index_or_insert 直接 panic!）。必须原样放行。
+    #[test]
+    fn inject_non_object_body_passes_through() {
+        for body in [
+            br#"[]"#.to_vec(),
+            br#"[{"model":"x"}]"#.to_vec(),
+            br#""just a string""#.to_vec(),
+            br#"42"#.to_vec(),
+            br#"null"#.to_vec(),
+            br#"not json at all"#.to_vec(),
+        ] {
+            let out = inject_stream_options("openai", "chat/completions", true, body.clone());
+            assert_eq!(out, body, "非对象请求体不应被改动");
+        }
+    }
+
+    /// 客户端自己带了 stream_options 就不要再动它，否则可能把它的设置覆盖掉
+    #[test]
+    fn inject_keeps_existing_stream_options() {
+        let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false}}"#
+            .to_vec();
+        let out = inject_stream_options("openai", "chat/completions", true, body.clone());
+        assert_eq!(out, body);
     }
 }

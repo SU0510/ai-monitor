@@ -26,6 +26,9 @@ export async function checkAlerts(): Promise<void> {
     const balances = await latestBalances();
 
     const lowOnes = accounts.filter((a) => {
+      // 停用的账户本来就不采集（见 collector），余额是旧值，拿它告警没有意义，
+      // 还会因为余额一直没更新而反复提醒一个用户已经主动关掉的账户。
+      if (!a.enabled) return false;
       const b = balances.find((x) => x.account_id === a.id);
       return b !== undefined && b.balance < threshold;
     });

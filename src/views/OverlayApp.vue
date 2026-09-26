@@ -49,6 +49,8 @@ const TOP_Y = 48; // 顶部居中的 Y
 type Mode = "capsule" | "expanded" | "edge";
 
 const lastUpdated = ref("");
+/** 最近一次「整体采集失败」的时间（HH:MM），无失败为空串 */
+const lastCollectFailedAt = ref("");
 const lowThreshold = ref(20);
 
 const lowBalance = computed(() => totalBalance.value <= lowThreshold.value);
@@ -78,6 +80,9 @@ let uiTimer: ReturnType<typeof setInterval> | null = null;
 let cursorTimer: ReturnType<typeof setInterval> | null = null;
 let hoverTimer: number | null = null;
 let dragging = false; // 正在拖动：抑制 hover 展开（让胶囊可拖）
+// 本次按下列真有实际移动（onMoved 只在窗口真的移动时才触发）。用来区分「点一下」
+// 和「拖了一段又松手」：只有后者才需要在松手时补一次贴边判断。
+let draggedThisPress = false;
 
 function compactTok(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
@@ -250,59 +255,81 @@ async function centerTop(): Promise<void> {
 
 // ---------- 状态切换（抽屉式） ----------
 
+/**
+ * 动画的统一入口：进入时置 animating，结束时无论成败都复位。
+ *
+ * 这几处原本各自写 `animating = true` … `animating = false`，中间任何一次
+ * setSize/setPosition 抛错（窗口被系统抢走焦点、显示器热插拔等）就会把 animating
+ * 永久留在 true —— 此后 hover、光标轮询、贴边判断全部直接 return，岛彻底卡死，
+ * 只能重启应用。所以必须 try/finally。
+ *
+ * suppressSnapUntil 也移到动画结束之后再设：窗口移动动画自己会触发 onMoved，
+ * 若在动画开始前就设，动画期间的事件会把抑制窗口不断往后推（甚至在动画结束后
+ * 才到期），反而让「动画刚结束就误判贴边」更容易发生。
+ */
+async function runAnimation(fn: () => Promise<void>): Promise<void> {
+  if (animating.value) return;
+  animating.value = true;
+  try {
+    await fn();
+    suppressSnapUntil = Date.now() + 800;
+    await savePos();
+  } catch (e) {
+    console.error("悬浮窗动画失败", e);
+  } finally {
+    animating.value = false;
+  }
+}
+
 /** 胶囊 -> 展开卡片（窗口向下延伸，抽屉下拉） */
 async function expand(): Promise<void> {
   if (animating.value || mode.value === "expanded") return;
-  animating.value = true;
-  suppressSnapUntil = Date.now() + 800;
-  const m = await getLogicalMetrics();
-  await animateSize(m.w, CAPSULE_W, m.h, EXPANDED_H, m.x, m.x, m.y, m.y);
-  mode.value = "expanded";
-  animating.value = false;
-  await savePos();
+  await runAnimation(async () => {
+    const m = await getLogicalMetrics();
+    await animateSize(m.w, CAPSULE_W, m.h, EXPANDED_H, m.x, m.x, m.y, m.y);
+    mode.value = "expanded";
+  });
 }
 
 /** 卡片 -> 收回胶囊（抽屉收起） */
 async function collapseToCapsule(): Promise<void> {
   if (animating.value || mode.value !== "expanded") return;
-  animating.value = true;
-  suppressSnapUntil = Date.now() + 800;
-  const m = await getLogicalMetrics();
-  await animateSize(m.w, CAPSULE_W, m.h, CAPSULE_H, m.x, m.x, m.y, m.y);
-  mode.value = "capsule";
-  animating.value = false;
-  await savePos();
+  await runAnimation(async () => {
+    const m = await getLogicalMetrics();
+    await animateSize(m.w, CAPSULE_W, m.h, CAPSULE_H, m.x, m.x, m.y, m.y);
+    mode.value = "capsule";
+  });
 }
 
 /** 贴边 -> 小半圆 */
 async function collapseToEdge(target: "left" | "right"): Promise<void> {
   if (animating.value || mode.value === "edge") return;
-  animating.value = true;
-  suppressSnapUntil = Date.now() + 800;
   edgeSide.value = target;
-  const m = await getLogicalMetrics();
-  const toX = target === "right" ? Math.max(0, m.screenW - EDGE_W) : 0;
-  await animateSize(m.w, EDGE_W, m.h, EDGE_H, m.x, toX, m.y, m.y);
-  mode.value = "edge";
-  animating.value = false;
-  await savePos();
+  await runAnimation(async () => {
+    const m = await getLogicalMetrics();
+    const toX = target === "right" ? Math.max(0, m.screenW - EDGE_W) : 0;
+    await animateSize(m.w, EDGE_W, m.h, EDGE_H, m.x, toX, m.y, m.y);
+    mode.value = "edge";
+  });
 }
 
 /** 半圆 -> 向屏幕内推出胶囊 */
 async function expandFromEdge(): Promise<void> {
   if (animating.value || mode.value !== "edge") return;
-  animating.value = true;
-  suppressSnapUntil = Date.now() + 800;
-  const m = await getLogicalMetrics();
-  const toX = edgeSide.value === "right" ? Math.max(0, m.screenW - CAPSULE_W) : 0;
-  await animateSize(m.w, CAPSULE_W, m.h, CAPSULE_H, m.x, toX, m.y, m.y);
-  mode.value = "capsule";
-  animating.value = false;
-  await savePos();
+  await runAnimation(async () => {
+    const m = await getLogicalMetrics();
+    const toX = edgeSide.value === "right" ? Math.max(0, m.screenW - CAPSULE_W) : 0;
+    await animateSize(m.w, CAPSULE_W, m.h, CAPSULE_H, m.x, toX, m.y, m.y);
+    mode.value = "capsule";
+  });
 }
 
 /** 拖动结束：只要一侧边界触碰到屏幕边缘就收成小半圆 */
 async function maybeSnapToEdge(): Promise<void> {
+  // 还按着鼠标（用户把岛拖到边缘后没松手）时不能动窗口：否则窗口会在指针底下
+  // 自己缩小 / 挪走，拖拽随即失效。松手那一刻 onUp 会再补一次判断。
+  if (dragging) return;
+  if (animating.value) return;
   if (Date.now() < suppressSnapUntil) return;
   if (mode.value !== "capsule" && mode.value !== "expanded") return;
   const m = await getLogicalMetrics();
@@ -374,10 +401,20 @@ async function loadData(): Promise<void> {
   await storeLoadData();
   // 数据变了就同步菜单栏（渲染口径与设置页预览一致）
   void pushMenubar();
+  const fmtTime = (iso: string) =>
+    new Date(iso).toLocaleTimeString(isZh() ? "zh-CN" : "en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   const t = await getSetting("last_collect_at");
-  lastUpdated.value = t
-    ? new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
-    : "";
+  lastUpdated.value = t ? fmtTime(t) : "";
+  // 最近一次采集整体失败时，last_collect_at 不会推进；只显示这个旧时间会让人
+  // 以为「定时器停了」。所以额外把失败的尝试时间标出来。
+  const outcome = await getSetting("last_collect_outcome").catch(() => null);
+  const attemptAt = await getSetting("last_collect_attempt_at").catch(() => null);
+  const failedAt =
+    outcome === "fail" && attemptAt && (!t || new Date(attemptAt) > new Date(t)) ? attemptAt : null;
+  lastCollectFailedAt.value = failedAt ? fmtTime(failedAt) : "";
 }
 
 function openDashboard(): void {
@@ -390,25 +427,71 @@ function hideOverlay(): void {
   void setSetting("overlay_enabled", "0");
 }
 
+// 拖动抑制：按下时不让 hover 误展开（胶囊可直接拖动）。
+// 定义在模块作用域而不是 onMounted 里面，这样 onUnmounted 能按引用摘掉它们——
+// 之前挂在 window 上却从不移除，组件销毁后这些闭包还在改已经失效的状态。
+function onDown(): void {
+  dragging = true;
+  draggedThisPress = false;
+  if (hoverTimer) window.clearTimeout(hoverTimer);
+}
+
+function onUp(): void {
+  // 光标在窗口外松开、或窗口失焦时，mouseup 可能收不到；所以 pointerup / blur
+  // 也接同一个处理，靠 dragging 判断重入，避免 dragging 永久为 true 把所有
+  // hover 展开都挡掉（那之后胶囊就再也点不开了）。
+  if (!dragging) return;
+  dragging = false;
+  if (moveTimer) window.clearTimeout(moveTimer);
+  // 拖动过程中 maybeSnapToEdge 会因 dragging 直接返回，松手这一刻必须补一次判断，
+  // 否则「拖到屏幕边缘松手」不会收成小半圆。只点一下没移动的用 draggedThisPress 排除。
+  if (draggedThisPress && islandOn.value) void maybeSnapToEdge();
+  draggedThisPress = false;
+}
+
+// Esc 收起展开态（回胶囊）；边缘态弹回胶囊
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key !== "Escape") return;
+  if (mode.value === "expanded") void collapseToCapsule();
+  else if (mode.value === "edge") void expandFromEdge();
+}
+
+/**
+ * 初始化里每一步都单独兜错。任何一个 await 失败（某个 setting 读不出来、
+ * 窗口 API 偶发失败）都不该让后面的监听器与定时器注册不上——那会让整个程序
+ * 「窗口在、但数据不刷新、托盘不更新」，从外面看就是装死。
+ */
+async function step(name: string, fn: () => Promise<void> | void): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    console.error(`悬浮窗初始化步骤失败：${name}`, e);
+  }
+}
+
 onMounted(async () => {
-  await ensureData();
-  // 先读菜单栏配置，避免首次推送用的是默认值
-  await loadMenubarConfigStore();
-  await loadData();
+  await step("初始化数据库与数据", async () => {
+    await ensureData();
+    // 先读菜单栏配置，避免首次推送用的是默认值
+    await loadMenubarConfigStore();
+    await loadData();
+  });
 
   // 岛是否渲染由 Rust 侧同步；这里先按库里的偏好落一个初始值，再听 Rust 的变更通知
-  islandOn.value = (await getSetting("overlay_enabled").catch(() => null)) !== "0";
-  unlistenIsland = await listen<boolean>(EVENT_OVERLAY_ENABLED_CHANGED, ({ payload }) => {
-    islandOn.value = payload;
-    // 岛开/关跟着起停光标轮询（面板打开时 Rust 也会发 false，一并停掉）
-    if (payload) startCursorWatch();
-    else stopCursorWatch();
-    // 被收起时顺手把展开态收回胶囊，下次打开就是干净状态
-    if (!payload && mode.value === "expanded") void collapseToCapsule();
+  await step("读取悬浮窗偏好", async () => {
+    islandOn.value = (await getSetting("overlay_enabled").catch(() => null)) !== "0";
+    unlistenIsland = await listen<boolean>(EVENT_OVERLAY_ENABLED_CHANGED, ({ payload }) => {
+      islandOn.value = payload;
+      // 岛开/关跟着起停光标轮询（面板打开时 Rust 也会发 false，一并停掉）
+      if (payload) startCursorWatch();
+      else stopCursorWatch();
+      // 被收起时顺手把展开态收回胶囊，下次打开就是干净状态
+      if (!payload && mode.value === "expanded") void collapseToCapsule();
+    });
   });
 
   // 恢复位置与模式
-  try {
+  await step("恢复位置与模式", async () => {
     const posRaw =
       (await getSetting(await posSettingKey())) ?? (await getSetting("overlay_pos"));
     if (posRaw) {
@@ -432,71 +515,72 @@ onMounted(async () => {
       await win.setSize(new LogicalSize(EDGE_W, EDGE_H));
       mode.value = "edge";
     }
-  } catch (e) {
-    console.error("恢复状态失败", e);
-  }
+  });
 
   // 拖动结束贴边判断
-  unlistenMove = await win.onMoved(() => {
-    if (!islandOn.value) return;
-    if (moveTimer) window.clearTimeout(moveTimer);
-    moveTimer = window.setTimeout(() => void maybeSnapToEdge(), 350);
+  await step("注册窗口移动监听", async () => {
+    unlistenMove = await win.onMoved(() => {
+      if (!islandOn.value) return;
+      // 动画自己就是在反复移动窗口，这里收到的事件不是用户在拖，必须忽略：
+      // 否则动画过程中不断重置 350ms 定时器，动画结束后会立刻触发一次贴边判断。
+      if (animating.value) return;
+      if (dragging) draggedThisPress = true;
+      if (moveTimer) window.clearTimeout(moveTimer);
+      moveTimer = window.setTimeout(() => void maybeSnapToEdge(), 350);
+    });
   });
 
   // 点击屏幕其他地方 -> 收回胶囊（兜底）
-  unlistenFocus = await win.onFocusChanged(({ payload }) => {
-    if (!islandOn.value) return;
-    if (!payload && mode.value === "expanded" && !animating.value) void collapseToCapsule();
+  await step("注册焦点监听", async () => {
+    unlistenFocus = await win.onFocusChanged(({ payload }) => {
+      if (!islandOn.value) return;
+      if (!payload && mode.value === "expanded" && !animating.value) void collapseToCapsule();
+    });
   });
 
-  const rawThreshold = await getSetting("low_balance_threshold");
-  if (rawThreshold) lowThreshold.value = parseInt(rawThreshold, 10) || 20;
-  startAutoCollect();
-  unlistenEvent = await listen(EVENT_BALANCE_UPDATED, () => void loadData());
-
-  // 代理记账后即时刷新；若距上次余额采集 >5 分钟则顺带刷新余额（余额跟上平台）
-  unlistenUsage = await listen("usage-updated", () => {
-    void maybeRefreshOnUsage();
+  await step("读取低余额阈值", async () => {
+    const rawThreshold = await getSetting("low_balance_threshold");
+    if (rawThreshold) lowThreshold.value = parseInt(rawThreshold, 10) || 20;
   });
 
-  // 设置窗口 / 账户页改完配置或账户数据后广播过来：立刻重读并重推（不等 30 秒兜底刷新）
-  unlistenMenubar = await listen(EVENT_MENUBAR_PUSH_REQUESTED, () => {
-    void (async () => {
-      await storeLoadData();
-      await loadMenubarConfigStore();
-      await pushMenubar();
-    })();
+  await step("启动自动采集", () => {
+    startAutoCollect();
   });
 
-  // 托盘下拉菜单点「全部刷新」：灵动岛窗口常驻，由它执行一次全量采集
-  unlistenRefresh = await listen(EVENT_REFRESH_ALL_REQUESTED, () => void refresh());
+  await step("注册数据事件监听", async () => {
+    unlistenEvent = await listen(EVENT_BALANCE_UPDATED, () => void loadData());
+
+    // 代理记账后即时刷新；若距上次余额采集 >5 分钟则顺带刷新余额（余额跟上平台）
+    unlistenUsage = await listen("usage-updated", () => {
+      void maybeRefreshOnUsage();
+    });
+
+    // 设置窗口 / 账户页改完配置或账户数据后广播过来：立刻重读并重推（不等 30 秒兜底刷新）
+    unlistenMenubar = await listen(EVENT_MENUBAR_PUSH_REQUESTED, () => {
+      void (async () => {
+        await storeLoadData();
+        await loadMenubarConfigStore();
+        await pushMenubar();
+      })();
+    });
+
+    // 托盘下拉菜单点「全部刷新」：灵动岛窗口常驻，由它执行一次全量采集
+    unlistenRefresh = await listen(EVENT_REFRESH_ALL_REQUESTED, () => void refresh());
+  });
 
   // 兜底：每 30 秒刷新本地数据
-  uiTimer = setInterval(() => void loadData(), 30_000);
+  if (!uiTimer) uiTimer = setInterval(() => void loadData(), 30_000);
 
   // 光标轮询只在岛真的渲染时才开（见 startCursorWatch 注释）
   if (islandOn.value) startCursorWatch();
 
-  // 拖动抑制：按下时不让 hover 误展开（胶囊可直接拖动）
-  const onDown = () => {
-    dragging = true;
-    if (hoverTimer) window.clearTimeout(hoverTimer);
-  };
-  const onUp = () => {
-    dragging = false;
-  };
   window.addEventListener("mousedown", onDown);
   window.addEventListener("mouseup", onUp);
-
-  // Esc 收起展开态（回胶囊）；边缘态弹回胶囊
-  const onKeydown = (e: KeyboardEvent) => {
-    if (e.key !== "Escape") return;
-    if (mode.value === "expanded") void collapseToCapsule();
-    else if (mode.value === "edge") void expandFromEdge();
-  };
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("blur", onUp);
   window.addEventListener("keydown", onKeydown);
 
-  void refresh();
+  await step("首次刷新", () => refresh());
 });
 
 onUnmounted(() => {
@@ -507,10 +591,19 @@ onUnmounted(() => {
   unlistenIsland?.();
   unlistenMove?.();
   unlistenFocus?.();
+  window.removeEventListener("mousedown", onDown);
+  window.removeEventListener("mouseup", onUp);
+  window.removeEventListener("pointerup", onUp);
+  window.removeEventListener("blur", onUp);
+  window.removeEventListener("keydown", onKeydown);
   if (moveTimer) window.clearTimeout(moveTimer);
   if (uiTimer) window.clearInterval(uiTimer);
   stopCursorWatch();
   if (hoverTimer) window.clearTimeout(hoverTimer);
+  uiTimer = null;
+  moveTimer = null;
+  hoverTimer = null;
+  dragging = false;
 });
 </script>
 
@@ -604,8 +697,12 @@ onUnmounted(() => {
           })
         }}</span>
         <span class="cost">¥{{ fmt(displayCost(today.cost, today.cost_estimated)) }}</span>
-        <span class="time">{{
-          lastUpdated ? t("overlay.update", { time: lastUpdated }) : ""
+        <span class="time" :class="{ failed: lastCollectFailedAt }">{{
+          lastCollectFailedAt
+            ? t("overlay.collectFailed", { time: lastCollectFailedAt })
+            : lastUpdated
+              ? t("overlay.update", { time: lastUpdated })
+              : ""
         }}</span>
       </div>
     </div>
@@ -894,6 +991,9 @@ onUnmounted(() => {
   margin-left: auto;
   font-size: 10px;
   color: #6b7280;
+}
+.time.failed {
+  color: #f87171;
 }
 
 /* ---- 边缘小半圆 ---- */

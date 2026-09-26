@@ -55,10 +55,24 @@ function hidePanel(): void {
 
 let unlisten: UnlistenFn | null = null;
 onMounted(async () => {
-  await ensureData();
-  const saved = await getSetting(DASHBOARD_TAB_KEY).catch(() => null);
-  if (saved && TABS.includes(saved as Tab)) tab.value = saved as Tab;
-  unlisten = await listen(EVENT_BALANCE_UPDATED, () => void ensureData());
+  // 每一步都单独兜错：读标签页偏好失败、或数据库初始化失败，都不该连带把
+  // 事件监听和自动采集一起跳过——那样面板会一直显示不刷新。
+  try {
+    await ensureData();
+  } catch (e) {
+    console.error("面板初始化数据失败", e);
+  }
+  try {
+    const saved = await getSetting(DASHBOARD_TAB_KEY).catch(() => null);
+    if (saved && TABS.includes(saved as Tab)) tab.value = saved as Tab;
+  } catch (e) {
+    console.error("恢复标签页失败", e);
+  }
+  try {
+    unlisten = await listen(EVENT_BALANCE_UPDATED, () => void ensureData());
+  } catch (e) {
+    console.error("注册余额更新监听失败", e);
+  }
   startAutoCollect();
 });
 onUnmounted(() => {

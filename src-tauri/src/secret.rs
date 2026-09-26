@@ -56,40 +56,74 @@ pub async fn init(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-async fn ensure_master_key(pool: &SqlitePool) -> Result<[u8; 32], String> {
-    if let Ok(key) = master_key(pool).await {
-        return Ok(key);
-    }
-
-    let mut key = [0u8; 32];
-    OsRng.fill_bytes(&mut key);
-    sqlx::query(
-        "INSERT INTO settings (key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = ?2",
-    )
-    .bind(MASTER_KEY_SETTING)
-    .bind(B64.encode(key))
-    .execute(pool)
-    .await
-    .map_err(|e| format!("保存主密钥失败: {e}"))?;
-    Ok(key)
+/// 主密钥的读取结果。必须区分「没有这条记录」和「读不出来/坏了」：
+/// 只有前者才允许生成新密钥，后者一旦重新生成就等于把已存的密钥全部销毁。
+enum MasterKeyState {
+    Present([u8; 32]),
+    Missing,
+    Corrupt(String),
 }
 
-async fn master_key(pool: &SqlitePool) -> Result<[u8; 32], String> {
+async fn read_master_key(pool: &SqlitePool) -> Result<MasterKeyState, String> {
     let raw: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
         .bind(MASTER_KEY_SETTING)
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("读取主密钥失败: {e}"))?;
-    let bytes = raw
-        .and_then(|s| B64.decode(s).ok())
-        .ok_or_else(|| "主密钥缺失".to_string())?;
-    let mut key = [0u8; 32];
+    let Some(encoded) = raw else {
+        return Ok(MasterKeyState::Missing);
+    };
+    let Ok(bytes) = B64.decode(&encoded) else {
+        return Ok(MasterKeyState::Corrupt("base64 解码失败".to_string()));
+    };
     if bytes.len() != 32 {
-        return Err("主密钥长度错误".to_string());
+        return Ok(MasterKeyState::Corrupt(format!(
+            "长度 {} 字节，应为 32",
+            bytes.len()
+        )));
     }
+    let mut key = [0u8; 32];
     key.copy_from_slice(&bytes);
-    Ok(key)
+    Ok(MasterKeyState::Present(key))
+}
+
+async fn ensure_master_key(pool: &SqlitePool) -> Result<(), String> {
+    match read_master_key(pool).await? {
+        MasterKeyState::Present(_) => Ok(()),
+        // 只有记录确实不存在时才生成。用 DO NOTHING 而不是 DO UPDATE：
+        // 即使出现并发/竞态也绝不会覆盖已经存在的主密钥。
+        MasterKeyState::Missing => {
+            let mut key = [0u8; 32];
+            OsRng.fill_bytes(&mut key);
+            sqlx::query(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO NOTHING",
+            )
+            .bind(MASTER_KEY_SETTING)
+            .bind(B64.encode(key))
+            .execute(pool)
+            .await
+            .map_err(|e| format!("保存主密钥失败: {e}"))?;
+            Ok(())
+        }
+        MasterKeyState::Corrupt(why) => {
+            // 绝不重新生成：只要主密钥被换掉，secret:* 就永久解不开了。
+            // 这里只记录警告让应用继续启动，后续 get/set 会把具体错误报给界面。
+            eprintln!(
+                "[secret] 主密钥不可用（{why}）：已保存的 API Key 将无法解密。\
+                 为避免销毁数据，不会重新生成主密钥。"
+            );
+            Ok(())
+        }
+    }
+}
+
+async fn master_key(pool: &SqlitePool) -> Result<[u8; 32], String> {
+    match read_master_key(pool).await? {
+        MasterKeyState::Present(key) => Ok(key),
+        MasterKeyState::Missing => Err("主密钥缺失".to_string()),
+        MasterKeyState::Corrupt(why) => Err(format!("主密钥损坏（{why}），已保存的密钥无法解密")),
+    }
 }
 
 fn setting_key(account: &str) -> String {

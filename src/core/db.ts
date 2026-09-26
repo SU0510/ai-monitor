@@ -193,6 +193,10 @@ export async function deleteAccount(id: number): Promise<void> {
   await d.execute("DELETE FROM balance_snapshots WHERE account_id = $1", [id]);
   await d.execute("DELETE FROM daily_usage WHERE account_id = $1", [id]);
   await d.execute("DELETE FROM quota_snapshots WHERE account_id = $1", [id]);
+  // 代理记账写的事件也带 account_id：不删的话删掉账户后这些用量会一直留在库里，
+  // 「模型用量排行」是直接聚合 usage_events 的，会继续把这些已删账户的量算进去。
+  await d.execute("DELETE FROM usage_events WHERE account_id = $1", [id]);
+  await d.execute("DELETE FROM alert_rules WHERE account_id = $1", [id]);
 }
 
 export async function setAccountEnabled(id: number, enabled: boolean): Promise<void> {

@@ -85,11 +85,10 @@ pub fn run() {
 
             // 仅首次启动（还没添加账户）自动弹出主面板引导；之后启动只留菜单栏/灵动岛，
             // 不再每次都把面板盖上来打断用户。面板随时可以从托盘菜单打开。
+            // 走 show_dashboard_command 而不是裸 show()：它会顺带 sync_island，
+            // 否则首次启动时常驻顶层的灵动岛会压在引导面板上。
             if !tauri::async_runtime::block_on(secret::has_accounts(app.handle())) {
-                if let Some(d) = app.get_webview_window("dashboard") {
-                    let _ = d.show();
-                    let _ = d.set_focus();
-                }
+                tray::show_dashboard_command(app.handle().clone());
             }
             Ok(())
         })
@@ -102,6 +101,7 @@ pub fn run() {
             tray::set_overlay_enabled,
             tray::show_dashboard_command,
             tray::hide_dashboard_command,
+            tray::toggle_overlay_command,
             commands::show_window,
             commands::hide_window,
             commands::toggle_window,
