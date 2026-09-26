@@ -25,7 +25,6 @@ import { primaryQuota, quotaView, type QuotaView } from "../core/quota";
 import {
   loadMenubarConfigStore,
   pushMenubar,
-  startMenubarRotation,
   stopRotation,
   EVENT_MENUBAR_PUSH_REQUESTED,
 } from "../core/menubarStore";
@@ -342,8 +341,7 @@ onMounted(async () => {
   // 先读菜单栏配置，避免首次推送用的是默认值
   await loadMenubarConfigStore();
   await loadData();
-  // 轮播由此窗口驱动（灵动岛常驻，两个窗口各转各的会互相打乱）
-  startMenubarRotation();
+  // 轮播由 pushMenubar 自己启动（灵动岛是唯一的托盘写入者，两个窗口各转各的会互相打乱）
 
   // 恢复位置与模式
   try {
@@ -401,7 +399,6 @@ onMounted(async () => {
       await storeLoadData();
       await loadMenubarConfigStore();
       await pushMenubar();
-      startMenubarRotation();
     })();
   });
 

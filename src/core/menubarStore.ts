@@ -141,6 +141,10 @@ export async function pushMenubar(): Promise<void> {
   } catch {
     // 托盘不可用（如 Linux 无托盘）不应影响主流程
   }
+  // 推送完顺手（重）启轮播。必须放在这里而不是由调用方在外面调：
+  // 推的是异步的，调用方要是没 await，外面调 restartRotation 时 lastRender 还是 null，
+  // 轮播就直接不启动了（表现为菜单栏一直停在第一帧）。
+  restartRotation();
 }
 
 /**
@@ -166,9 +170,4 @@ export function stopRotation(): void {
     clearInterval(rotationTimer);
     rotationTimer = null;
   }
-}
-
-/** 灵动岛窗口常驻，由它负责启动轮播，避免两个窗口各转各的 */
-export function startMenubarRotation(): void {
-  restartRotation();
 }
