@@ -35,5 +35,14 @@ export default tseslint.config(
       "@typescript-eslint/no-empty-object-type": "off",
     },
   },
+  {
+    // 纯函数断言脚本，用 node 跑（npm run test:menubar）
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+  },
   prettier
 );

@@ -207,7 +207,7 @@ export default {
       showIcon: "显示图标",
       titleMode: "排布方式",
       modeSegments: "并排显示（超出的 key 折叠为 +N）",
-      modeRotate: "轮播显示（每个 key 轮流单独出现）",
+      modeRotate: "轮播显示（每个 key 轮流出现，一次显示它的全部信息）",
       rotateSecs: "轮播间隔（秒）",
       maxSegments: "最多显示 key 数",
       separator: "分隔符",

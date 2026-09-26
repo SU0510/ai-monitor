@@ -348,9 +348,27 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
         .map((s) => slotText(s, data, { label: false }))
         .filter((x): x is string => x !== null);
       if (aggText.length > 0) titles.push(prefix + aggText.join(sep));
+
+      // 同一个 key 的槽位归到同一帧：不会出现「先显示这个 key 的余额、
+      // 下一帧才显示它的限额」这种同一把 key 被拆开的情况。
+      const groups = new Map<number, MenubarSlot[]>();
       for (const s of accountSlots) {
-        const text = slotText(s, data, { label: true });
-        if (text !== null) titles.push(prefix + text);
+        const id = s.accountId as number;
+        const list = groups.get(id);
+        if (list) list.push(s);
+        else groups.set(id, [s]);
+      }
+      for (const [id, slots] of groups) {
+        const acc = data.accounts.find((a) => a.id === id);
+        // 账户已删除：整帧跳过，不留一个名字对不上的空帧
+        if (!acc) continue;
+        // key 名在帧首出现一次，帧内各段不再重复
+        const parts = slots
+          .map((s) => slotText(s, data, { label: false }))
+          .filter((x): x is string => x !== null);
+        if (parts.length === 0) continue;
+        const label = slots.find((s) => s.label)?.label ?? acc.label;
+        titles.push(prefix + (label ? `${label} ` : "") + parts.join(sep));
       }
     } else {
       // 按用户配置的顺序渲染；只对「指定 key」槽位做数量折叠

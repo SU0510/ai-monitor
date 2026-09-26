@@ -213,7 +213,7 @@ export default {
       showIcon: "Show icon",
       titleMode: "Layout",
       modeSegments: "Inline (extra keys collapse to +N)",
-      modeRotate: "Rotate (each key shown on its own, in turn)",
+      modeRotate: "Rotate (each key in turn, showing all of its info at once)",
       rotateSecs: "Rotation interval (s)",
       maxSegments: "Max keys shown",
       separator: "Separator",
