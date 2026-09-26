@@ -1,0 +1,5 @@
+# 统一历史身份显示：把曾经的本地邮箱/主机名邮箱归到 GitHub noreply，
+# 避免真实邮箱与机器名继续出现在 log、blame、GitHub 提交页上。
+Frederick <87891597+SU0510@users.noreply.github.com> <lurui0123@126.com>
+chen <87891597+SU0510@users.noreply.github.com> <chen@Chens-MacBook-Air.local>
+chen <87891597+SU0510@users.noreply.github.com> <chen@local>
