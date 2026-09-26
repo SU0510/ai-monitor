@@ -100,6 +100,7 @@ pub fn run() {
             commands::set_proxy_secret,
             tray::set_tray_display,
             tray::set_overlay_enabled,
+            tray::show_dashboard_command,
             tray::hide_dashboard_command,
             commands::show_window,
             commands::hide_window,

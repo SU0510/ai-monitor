@@ -300,6 +300,12 @@ fn show_dashboard(app: &AppHandle) {
     sync_island(app);
 }
 
+/// 打开面板（托盘菜单 / 岛上的「⤢」按钮）。显隐与岛的状态在 Rust 侧一次同步好
+#[tauri::command]
+pub fn show_dashboard_command(app: AppHandle) {
+    show_dashboard(&app);
+}
+
 /// 收起面板并把岛还回来（用户本来就关着岛时，偏好不变，岛仍不渲染）
 pub fn hide_dashboard(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("dashboard") {

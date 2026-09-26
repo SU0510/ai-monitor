@@ -340,9 +340,8 @@ async function loadData(): Promise<void> {
 }
 
 function openDashboard(): void {
-  // 打开面板时隐藏灵动岛（二者互斥）
-  void invoke("hide_window", { label: "overlay" });
-  void invoke("show_window", { label: "dashboard" });
+  // 走 Rust 侧统一入口：面板与岛的显隐一次同步好（岛窗口不隐藏，它要继续跑定时器）
+  void invoke("show_dashboard_command");
 }
 /** 「—」按钮 = 关掉岛：和设置里的开关是同一个偏好，会被记住 */
 function hideOverlay(): void {
