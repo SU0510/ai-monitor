@@ -27,6 +27,7 @@ import {
   pushMenubar,
   startMenubarRotation,
   stopRotation,
+  EVENT_MENUBAR_CONFIG_CHANGED,
 } from "../core/menubarStore";
 import { startAutoCollect, EVENT_BALANCE_UPDATED } from "../core/collector";
 import { i18n } from "../i18n";
@@ -58,6 +59,7 @@ let suppressSnapUntil = 0;
 
 let unlistenEvent: UnlistenFn | null = null;
 let unlistenUsage: UnlistenFn | null = null;
+let unlistenMenubar: UnlistenFn | null = null;
 let unlistenMove: UnlistenFn | null = null;
 let unlistenFocus: UnlistenFn | null = null;
 let moveTimer: number | null = null;
@@ -393,6 +395,15 @@ onMounted(async () => {
     void maybeRefreshOnUsage();
   });
 
+  // 设置窗口改完菜单栏配置后广播过来：立刻按新配置重推一次（不等 30 秒兜底刷新）
+  unlistenMenubar = await listen(EVENT_MENUBAR_CONFIG_CHANGED, () => {
+    void (async () => {
+      await loadMenubarConfigStore();
+      await pushMenubar();
+      startMenubarRotation();
+    })();
+  });
+
   // 兜底：每 30 秒刷新本地数据
   uiTimer = setInterval(() => void loadData(), 30_000);
 
@@ -450,6 +461,7 @@ onUnmounted(() => {
   stopRotation();
   unlistenEvent?.();
   unlistenUsage?.();
+  unlistenMenubar?.();
   unlistenMove?.();
   unlistenFocus?.();
   if (moveTimer) window.clearTimeout(moveTimer);

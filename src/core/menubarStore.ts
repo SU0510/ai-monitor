@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { getSetting, setSetting } from "./db";
 import {
   accounts,
@@ -30,6 +31,9 @@ import {
  * 读写配置、把 store 里的数据整理成渲染输入、推给 Rust 托盘。
  */
 
+/** 配置变更事件：设置窗口改完后广播，让其它窗口（灵动岛）立刻重新读取 */
+export const EVENT_MENUBAR_CONFIG_CHANGED = "menubar-config-changed";
+
 /** 当前配置（设置页与托盘共用同一份，改完立即生效） */
 export const menubarConfig = ref<MenubarConfig>(defaultMenubarConfig());
 
@@ -57,6 +61,9 @@ export async function saveMenubarConfigStore(cfg: MenubarConfig): Promise<void> 
   const normalized = normalizeMenubarConfig(cfg);
   menubarConfig.value = normalized;
   await setSetting(MENUBAR_CONFIG_KEY, JSON.stringify(normalized));
+  // 设置窗口与灵动岛是两个独立的 JS 上下文，各自持有一份 menubarConfig；
+  // 广播出去让灵动岛（负责定时推送的那个窗口）马上同步，否则它会在下次刷新时用旧值覆盖
+  await emit(EVENT_MENUBAR_CONFIG_CHANGED).catch(() => null);
   await pushMenubar();
   restartRotation();
 }
@@ -101,6 +108,10 @@ export function renderMenubarNow(): MenubarRender {
 
 /** 把当前配置与数据推给托盘（Rust 侧只负责套用，不做任何格式化） */
 export async function pushMenubar(): Promise<void> {
+  // 每个窗口各自持有一份内存配置，而定时推送只发生在灵动岛窗口里；
+  // 若这里直接用内存值，设置窗口改完 30 秒后就会被灵动岛的旧值覆盖回默认，
+  // 所以每次推送都从 settings 重新读一遍，让库里的值成为唯一事实来源。
+  await loadMenubarConfigStore();
   const cfg = menubarConfig.value;
   const render = renderMenubar(cfg, buildMenubarData());
   lastRender = render;

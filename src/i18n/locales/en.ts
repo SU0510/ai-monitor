@@ -236,6 +236,10 @@ export default {
       previewHint:
         "The preview uses the same renderer as the real menu bar. macOS shows the text; Windows has no menu bar text, so the same information appears in the tooltip and dropdown. Menu bar space is limited — long text gets truncated by the system.",
       rotateFrames: "{n} frames rotating: {list}",
+      minimal: "Minimal mode",
+      minimalSymbol: "Show ¥",
+      minimalHint:
+        "Shows just the icon and a few numbers: no key names or units, money at one decimal, segments separated by a dot. Today's spend is prefixed with \"-\", balance is not; quota is shown as a bare percentage.",
     },
     toast: {
       apiKeyRequired: "Please enter API Key",

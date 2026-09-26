@@ -49,6 +49,10 @@ export interface MenubarConfig {
   menuAccounts: boolean;
   /** 下拉菜单里每个 key 显示哪个指标 */
   menuAccountMetric: MenubarMetric;
+  /** 极简模式：只留数字，去掉账户名与单位，金额固定 1 位小数 */
+  minimal: boolean;
+  /** 极简模式下是否带货币符号（¥）；关掉就是纯数字 */
+  minimalSymbol: boolean;
 }
 
 export interface MenubarAccountData {
@@ -113,6 +117,8 @@ export function defaultMenubarConfig(): MenubarConfig {
     maxSegments: 3,
     menuAccounts: true,
     menuAccountMetric: "balance",
+    minimal: false,
+    minimalSymbol: true,
   };
 }
 
@@ -183,6 +189,8 @@ export function normalizeMenubarConfig(raw: unknown): MenubarConfig {
     maxSegments: asPositiveInt(o.maxSegments, def.maxSegments, 1, MAX_SLOTS),
     menuAccounts: asBool(o.menuAccounts, def.menuAccounts),
     menuAccountMetric: asMetric(o.menuAccountMetric, def.menuAccountMetric),
+    minimal: asBool(o.minimal, def.minimal),
+    minimalSymbol: asBool(o.minimalSymbol, def.minimalSymbol),
   };
 }
 
@@ -210,11 +218,27 @@ function money(amount: number, currency: string, compact: boolean): string {
   return compact ? compactMoney(amount, currency) : formatMoney(amount, currency);
 }
 
+/** 极简模式的金额：固定 1 位小数、无千分位；withSymbol 决定要不要 ¥ */
+export function formatMoney1(amount: number, currency: string, withSymbol: boolean): string {
+  const sign = amount < 0 ? "-" : "";
+  const abs = Math.abs(amount).toFixed(1);
+  return withSymbol ? `${sign}${currencySymbol(currency)}${abs}` : `${sign}${abs}`;
+}
+
 /** 单条额度槽位的文案（如 "3h 55%"）；无额度数据返回 null */
 function quotaText(q: QuotaView | null, window?: string): string | null {
   if (!q) return null;
   if (window && q.window !== window) return null;
   return `${q.window} ${q.pct}%`;
+}
+
+export interface SlotTextOptions {
+  /** 指定 key 的槽位是否带账户名前缀（默认带；tooltip 与预览需要，极简模式不要） */
+  label?: boolean;
+  /** 极简模式：去掉账户名与单位，金额固定 1 位小数 */
+  minimal?: boolean;
+  /** 极简模式下是否带货币符号（默认带） */
+  symbol?: boolean;
 }
 
 /**
@@ -223,8 +247,12 @@ function quotaText(q: QuotaView | null, window?: string): string | null {
 export function slotText(
   slot: MenubarSlot,
   data: MenubarData,
-  separatorLabel = true
+  opts: SlotTextOptions = {}
 ): string | null {
+  const minimal = opts.minimal === true;
+  const withSymbol = opts.symbol !== false;
+  const showLabel = (opts.label ?? true) && !minimal;
+
   const account =
     slot.kind === "account" ? data.accounts.find((a) => a.id === slot.accountId) : null;
   // 指定了账户但账户已删除：不显示，避免留下一个名字对不上的空槽
@@ -232,29 +260,44 @@ export function slotText(
 
   const label = slot.label ?? account?.label ?? "";
   const compact = slot.compact === true;
-  const prefix = separatorLabel && slot.kind === "account" && label ? `${label} ` : "";
+  const prefix = showLabel && slot.kind === "account" && label ? `${label} ` : "";
 
   if (slot.metric === "balance") {
     if (slot.kind === "account") {
       if (account!.balance === null) return null;
-      return `${prefix}${money(account!.balance, account!.currency, compact)}`;
+      const v = account!.balance;
+      const cur = account!.currency;
+      return `${prefix}${minimal ? formatMoney1(v, cur, withSymbol) : money(v, cur, compact)}`;
     }
-    return money(data.totals.balance, data.totals.currency, compact);
+    const v = data.totals.balance;
+    const cur = data.totals.currency;
+    return minimal ? formatMoney1(v, cur, withSymbol) : money(v, cur, compact);
   }
 
   if (slot.metric === "todayCost") {
     const cost = slot.kind === "account" ? account!.todayCost : data.totals.todayCost;
     const currency = slot.kind === "account" ? account!.currency : data.totals.currency;
+    // 极简模式下余额与花费都是裸数字，用「-」区分花费
+    if (minimal) return `-${formatMoney1(Math.abs(cost), currency, withSymbol)}`;
     return `${prefix}-${money(cost, currency, compact)}`;
   }
 
   if (slot.metric === "tokens") {
     const tokens = slot.kind === "account" ? account!.tokens : data.totals.tokens;
+    if (minimal) return compactTokens(tokens);
     return `${prefix}${compactTokens(tokens)} tok`;
   }
 
   const text = quotaText(slot.kind === "account" ? account!.quota : data.totals.quota, slot.window);
-  return text === null ? null : `${prefix}${text}`;
+  if (text === null) return null;
+  // 极简模式下只留百分比
+  return minimal ? `${quotaPercentText(text)}` : `${prefix}${text}`;
+}
+
+/** 从 "3h 55%" 里取出 "55%"（极简模式不要窗口名） */
+function quotaPercentText(text: string): string {
+  const m = /(\d+%)$/.exec(text);
+  return m ? m[1] : text;
 }
 
 /** 采集状态前缀：出错优先于采集中（一眼能看出数据是旧的） */
@@ -283,7 +326,7 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
           metric: cfg.menuAccountMetric,
           accountId: acc.id,
         };
-        const text = slotText(slot, data, true);
+        const text = slotText(slot, data, { label: true });
         return { id: `acc-${acc.id}`, label: text ?? acc.label, enabled: true };
       })
     : [];
@@ -293,14 +336,20 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
 
   if (cfg.showTitle) {
     const prefix = statePrefix(data);
-    if (cfg.titleMode === "rotate") {
+    if (cfg.minimal) {
+      // 极简：只按顺序排数字，不带账户名/单位，也不做 +N 折叠（本来就很短）
+      const parts = cfg.slots
+        .map((s) => slotText(s, data, { minimal: true, symbol: cfg.minimalSymbol }))
+        .filter((x): x is string => x !== null);
+      if (parts.length > 0) titles.push(prefix + parts.join(sep));
+    } else if (cfg.titleMode === "rotate") {
       // 轮播：一帧内不混多个 key，这样同一 baseUrl 的多把 key 在时间上分开出现
       const aggText = aggregateSlots
-        .map((s) => slotText(s, data, false))
+        .map((s) => slotText(s, data, { label: false }))
         .filter((x): x is string => x !== null);
       if (aggText.length > 0) titles.push(prefix + aggText.join(sep));
       for (const s of accountSlots) {
-        const text = slotText(s, data, true);
+        const text = slotText(s, data, { label: true });
         if (text !== null) titles.push(prefix + text);
       }
     } else {
@@ -308,7 +357,7 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
       const shown: string[] = [];
       let accountCount = 0;
       for (const s of cfg.slots) {
-        const text = slotText(s, data, true);
+        const text = slotText(s, data, { label: true });
         if (text === null) continue;
         if (s.kind === "account") {
           if (accountCount >= cfg.maxSegments) {
@@ -327,7 +376,7 @@ export function renderMenubar(cfg: MenubarConfig, data: MenubarData): MenubarRen
 
   // tooltip 不折叠：菜单栏文字被系统截断时，悬停仍能看到全部 key
   const tooltipParts = cfg.slots
-    .map((s) => slotText(s, data, true))
+    .map((s) => slotText(s, data, { label: true }))
     .filter((x): x is string => x !== null);
   const tooltip = tooltipParts.length > 0 ? `AI Monitor${sep}${tooltipParts.join(sep)}` : null;
 

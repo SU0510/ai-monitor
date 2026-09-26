@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use tauri::{
     image::Image,
     menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     AppHandle, Manager,
 };
 
@@ -40,7 +40,9 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // 左键直接展开下拉菜单（面板入口在菜单里）；之前设成 false 又没有走菜单，
+        // 结果左键只会弹面板、根本看不到菜单
+        .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
             let id = event.id.as_ref();
             match id {
@@ -50,16 +52,6 @@ pub fn create_tray(app: &tauri::App) -> tauri::Result<()> {
                 // 账户条目（前端生成的 acc-<id>）：点开面板看明细
                 _ if id.starts_with("acc-") => show_dashboard(app),
                 _ => {}
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                show_dashboard(tray.app_handle());
             }
         })
         .build(app)?;

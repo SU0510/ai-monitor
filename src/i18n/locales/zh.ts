@@ -230,6 +230,10 @@ export default {
       previewHint:
         "预览与真实菜单栏使用同一套渲染逻辑。macOS 显示文字；Windows 没有菜单栏文字，同样的信息通过悬停提示与下拉菜单呈现。菜单栏空间有限，文字过长系统会自行截断。",
       rotateFrames: "共 {n} 帧轮播：{list}",
+      minimal: "极简模式",
+      minimalSymbol: "带 ¥",
+      minimalHint:
+        "只显示图标和几个数字：去掉 key 名与单位，金额固定一位小数，组件之间用点分隔。今日花费带「-」，余额不带；限额只留百分比。",
     },
     toast: {
       apiKeyRequired: "请填写 API Key",

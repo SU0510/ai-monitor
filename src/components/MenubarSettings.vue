@@ -77,6 +77,11 @@ function moveSlot(index: number, delta: number): void {
 function slotBroken(slot: MenubarSlot): boolean {
   return slot.kind === "account" && !accounts.value.some((a) => a.id === slot.accountId);
 }
+
+/** 极简模式是「图标 + 几个数字」，所以打开时把图标也一并打开 */
+function onMinimalChange(on: boolean): void {
+  if (on) cfg.value.showIcon = true;
+}
 </script>
 
 <template>
@@ -97,6 +102,22 @@ function slotBroken(slot: MenubarSlot): boolean {
     </div>
 
     <div class="form-row">
+      <span class="form-label">{{ t("dashboard.menubar.minimal") }}</span>
+      <label class="switch">
+        <input v-model="cfg.minimal" type="checkbox" @change="onMinimalChange(cfg.minimal)" />
+        <span class="slider"></span>
+      </label>
+      <template v-if="cfg.minimal">
+        <span class="form-label">{{ t("dashboard.menubar.minimalSymbol") }}</span>
+        <label class="switch">
+          <input v-model="cfg.minimalSymbol" type="checkbox" />
+          <span class="slider"></span>
+        </label>
+      </template>
+    </div>
+    <p v-if="cfg.minimal" class="hint">{{ t("dashboard.menubar.minimalHint") }}</p>
+
+    <div v-if="!cfg.minimal" class="form-row">
       <span class="form-label">{{ t("dashboard.menubar.titleMode") }}</span>
       <select v-model="cfg.titleMode" class="input select">
         <option value="segments">{{ t("dashboard.menubar.modeSegments") }}</option>

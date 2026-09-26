@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { getSetting, setSetting, listPrices, upsertPrice, type PriceRow } from "../core/db";
 import { getCollectIntervalMinutes, setCollectIntervalMinutes } from "../core/collector";
-import { providers } from "../providers";
+import { providers, getProvider } from "../providers";
 import { CUSTOM_PREFIX } from "../providers/custom";
 import { syncGatewayPrices } from "../core/priceSync";
 import { loadMenubarConfigStore } from "../core/menubarStore";
@@ -402,7 +402,7 @@ onMounted(async () => {
         </thead>
         <tbody>
           <tr v-for="p in prices" :key="p.id">
-            <td>{{ p.provider_id }}</td>
+            <td>{{ getProvider(p.provider_id)?.name ?? p.provider_id }}</td>
             <td>{{ p.model }}</td>
             <td>¥{{ p.input_price }}</td>
             <td>¥{{ p.output_price }}</td>
