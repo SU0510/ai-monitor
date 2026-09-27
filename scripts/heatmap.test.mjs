@@ -2,6 +2,7 @@ import {
   buildHeatmapCells,
   levelOf,
   levelThresholds,
+  mondayIndex,
   monthLabels,
   weekCount,
   weekdayLabels,
@@ -62,9 +63,11 @@ eq(levelOf(123, null), 1, "无阈值但有用量：给 1 档而不是 0");
 // ---------- 网格几何 ----------
 
 const cases = [
+  ["2026-09-27", 12], // 实际使用的跨度（整年 ≈ 53 列）
   ["2026-09-27", 6],
   ["2026-09-26", 6], // 周六：最后一列刚好满 7 格
-  ["2027-01-03", 6], // 跨年（12 月 → 1 月）
+  ["2027-01-03", 12], // 跨年（12 月 → 1 月）
+  ["2027-01-03", 6],
   ["2024-03-01", 6], // 闰年 2 月
   ["2026-06-15", 3],
   ["2026-06-15", 1],
@@ -76,7 +79,7 @@ for (const [todayStr, months] of cases) {
   const tag = `${todayStr}/${months}个月`;
 
   eq(cells[0].date, ymd(day(cells[0].date)), `${tag}：日期格式为 YYYY-MM-DD`);
-  eq(day(cells[0].date).getDay(), 0, `${tag}：起点是周日（行即星期几）`);
+  eq(mondayIndex(day(cells[0].date)), 0, `${tag}：起点是周一（一列从上到下 = 周一到周日）`);
   eq(cells[cells.length - 1].date, ymd(today), `${tag}：终点是今天`);
 
   const consecutive = cells.every(
@@ -92,9 +95,13 @@ for (const [todayStr, months] of cases) {
   const lead = Math.round((rangeStart - day(cells[0].date)) / 86400000);
   ok(lead >= 0 && lead <= 6, `${tag}：月份边界对齐（前导 ${lead} 天 ≤ 6）`);
 
-  // 最后一列是残列：长度对 7 取余应等于今天在周内的偏移 +1
-  eq(cells.length % 7, (today.getDay() + 1) % 7, `${tag}：最后一列为残列`);
+  // 最后一列是残列：长度对 7 取余应等于「今天距周一过了几天」+1
+  eq(cells.length % 7, (mondayIndex(today) + 1) % 7, `${tag}：最后一列为残列`);
   eq(weekCount(cells), Math.ceil(cells.length / 7), `${tag}：列数与格子数自洽`);
+
+  // 行号必须等于星期几（周一到周日），这是「一列从上到下就是周一到周日」的核心
+  const rowBad = cells.filter((c, i) => mondayIndex(day(c.date)) !== i % 7);
+  eq(rowBad.length, 0, `${tag}：第 i%7 行就是对应星期几（${rowBad[0]?.date ?? ""}）`);
 
   // 每个月一个标签，且落在递增的列上
   const labels = monthLabels(cells, "zh");
@@ -153,8 +160,8 @@ for (const loc of ["zh", "en"]) {
   eq(labels.length, 7, `${loc}：7 个槽位（与格子行数对齐）`);
   eq(
     labels.map((s) => (s ? 1 : 0)),
-    [0, 1, 0, 1, 0, 1, 0],
-    `${loc}：只填周一/周三/周五`
+    [1, 0, 1, 0, 1, 0, 0],
+    `${loc}：只填周一/周三/周五，且行 0 = 周一`
   );
   ok(new Set(labels.filter(Boolean)).size === 3, `${loc}：三个标签互不相同`);
 }

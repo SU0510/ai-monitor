@@ -15,8 +15,8 @@ import UsageHeatmap from "./UsageHeatmap.vue";
 
 const { t } = useI18n();
 
-/** 热力图覆盖的自然月数量 */
-const HEATMAP_MONTHS = 6;
+/** 热力图覆盖的自然月数量（整年 ≈ 53 列，正好铺满加宽后的面板） */
+const HEATMAP_MONTHS = 12;
 
 const recentUsage = ref<RecentUsageRow[]>([]);
 const monthly = ref<MonthlyUsageRow[]>([]);

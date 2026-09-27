@@ -55,11 +55,19 @@ export function levelOf(value: number, th: readonly [number, number, number] | n
 }
 
 /**
+ * 周一 = 0 … 周日 = 6。
+ * JS 的 getDay() 是「周日 = 0」，直接用会和「一周从周一开始」的整体设计错位一格。
+ */
+export function mondayIndex(d: Date): number {
+  return (d.getDay() + 6) % 7;
+}
+
+/**
  * 逐日格子。
  *
- * 起点取「months-1 个月前的那个月的 1 号」再回退到所在周的周日：
+ * 起点取「months-1 个月前的那个月的 1 号」再回退到所在周的周一：
  * - 按自然月对齐，月份标签才会落在整月边界上（回推 months*30 天会从一个月的中间开始）
- * - 回退到周日保证「一列正好一周」，行即星期几
+ * - 回退到周一保证「一列正好一周、一列从上到下就是周一到周日」
  *
  * 返回顺序就是填充顺序：每 7 个一列，直接丢进 grid-auto-flow: column 即可。
  */
@@ -71,7 +79,7 @@ export function buildHeatmapCells(
   const end = startOfDay(today);
   const rangeStart = new Date(end.getFullYear(), end.getMonth() - (months - 1), 1);
   const cur = new Date(rangeStart);
-  cur.setDate(cur.getDate() - cur.getDay()); // 回退到周日
+  cur.setDate(cur.getDate() - mondayIndex(cur)); // 回退到周一
 
   const th = levelThresholds([...daily.values()]);
   const out: HeatmapCell[] = [];
@@ -103,13 +111,13 @@ export function monthLabels(cells: HeatmapCell[], locale: string): string[] {
 }
 
 /**
- * 左侧星期标签：7 个槽位、只填周一/周三/周五（和 GitHub 一致，行 0 是周日）。
+ * 左侧星期标签：7 个槽位、只填周一/周三/周五。
  * 留空槽位而不是只返回 3 项，是为了让标签和格子的行高行距天然对齐。
+ * 行 0 = 周一，所以填在 0/2/4 三个槽位上（2024-01-01 正好是周一）。
  */
 export function weekdayLabels(locale: string): string[] {
   const fmt = new Intl.DateTimeFormat(locale, { weekday: "short" });
-  // 2024-01-07 是周日
   return Array.from({ length: 7 }, (_, i) =>
-    i === 1 || i === 3 || i === 5 ? fmt.format(new Date(2024, 0, 7 + i)) : ""
+    i === 0 || i === 2 || i === 4 ? fmt.format(new Date(2024, 0, 1 + i)) : ""
   );
 }

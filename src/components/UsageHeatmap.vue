@@ -149,8 +149,8 @@ onMounted(async () => {
 <style scoped>
 .heatmap {
   position: relative;
-  --hm-cell: 11px;
-  --hm-gap: 3px;
+  --hm-cell: 15px;
+  --hm-gap: 4px;
   /* 空格子：GitHub 亮色主题下是白色，这里是深色主题，用一层很淡的中性底代替，
      纯白在 #0f1117 上会亮得压过绿色本身 */
   --hm-c0: rgba(255, 255, 255, 0.055);
@@ -170,18 +170,18 @@ onMounted(async () => {
   width: max-content;
 }
 .hm-corner {
-  height: 13px;
+  height: 16px;
 }
 .hm-months {
   display: grid;
   grid-auto-flow: column;
-  grid-template-rows: 13px;
+  grid-template-rows: 16px;
   grid-auto-columns: var(--hm-cell);
   gap: var(--hm-gap);
 }
 .hm-month {
-  font-size: 9px;
-  line-height: 13px;
+  font-size: 10px;
+  line-height: 16px;
   color: var(--c-text-faint);
   white-space: nowrap;
 }
@@ -192,7 +192,7 @@ onMounted(async () => {
 }
 .hm-day-label {
   height: var(--hm-cell);
-  font-size: 9px;
+  font-size: 10px;
   line-height: var(--hm-cell);
   color: var(--c-text-faint);
   text-align: right;
@@ -208,7 +208,7 @@ onMounted(async () => {
 .hm-cell {
   width: var(--hm-cell);
   height: var(--hm-cell);
-  border-radius: 2.5px;
+  border-radius: 3px;
   background: var(--hm-c0);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
   transition: box-shadow 0.12s ease;
@@ -246,7 +246,7 @@ onMounted(async () => {
 .hm-legend {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--hm-gap);
   font-size: 10px;
   color: var(--c-text-faint);
   flex-shrink: 0;
