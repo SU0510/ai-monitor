@@ -8,6 +8,8 @@ import {
   addAccount as dbAddAccount,
   deleteAccount as dbDeleteAccount,
   renameAccount as dbRenameAccount,
+  listAccounts,
+  type AccountRow,
 } from "../core/db";
 import { collectAccount, deleteAccountAndSecret } from "../core/collector";
 import {
@@ -18,9 +20,11 @@ import {
   deleteCustomConfig,
 } from "../providers";
 import { CUSTOM_PREFIX } from "../providers/custom";
+import { syncTokensForAccount } from "../core/tokenSync";
 import { requestMenubarPush } from "../core/menubarStore";
 import {
   litellmPreset,
+  genericUsagePreset,
   litellmQuotaDefaults,
   litellmPriceDefaults,
   requestCustomBalance,
@@ -146,9 +150,12 @@ async function removeConfig(cfg: CustomApiConfig): Promise<void> {
   showToast(t("dashboard.toast.customApiDeleted"));
 }
 
+/** 可选预设：键用于 i18n 文案，值是要载入的模板 */
+const presetKey = ref<"litellm" | "generic">("litellm");
+
 function loadPreset(): void {
   if (!customDraft.value) return;
-  const preset = litellmPreset();
+  const preset = presetKey.value === "generic" ? genericUsagePreset() : litellmPreset();
   customDraft.value = { ...preset, id: customDraft.value.id, name: customDraft.value.name };
   headersText.value = "";
   queryText.value = "";
@@ -304,6 +311,54 @@ function updateBalanceOperand(e: Event): void {
 
 function updateBalanceOperandSource(e: Event): void {
   setDraftRule("balance", { operandSource: (e.target as HTMLInputElement).value });
+}
+
+const syncingTokens = ref(false);
+
+/** 立即把该配置下所有账户的逐日用量同步进来（来源与窗口由两个开关决定） */
+async function syncTokensNow(): Promise<void> {
+  const cfg = customDraft.value;
+  if (!cfg) return;
+  if (!cfg.tokenSync) {
+    showToast(t("dashboard.customApi.tokenSyncMissing"));
+    return;
+  }
+  syncingTokens.value = true;
+  try {
+    const mine = (await listAccounts()).filter(
+      (a: AccountRow) => a.provider_id === `${CUSTOM_PREFIX}${cfg.id}`
+    );
+    if (mine.length === 0) {
+      showToast(t("dashboard.customApi.tokenSyncNoAccount"));
+      return;
+    }
+    const history = cfg.syncTokenHistory ?? false;
+    let days = 0;
+    let cost = 0;
+    let failed = 0;
+    for (const a of mine) {
+      try {
+        const key = await invoke<string>("get_secret", { account: String(a.id) });
+        const r = await syncTokensForAccount(a.id, cfg, key, { history });
+        days += r.days;
+        cost += r.cost;
+      } catch (e) {
+        failed++;
+        console.error(`逐日用量同步失败（${a.name}）`, e);
+      }
+    }
+    showToast(
+      failed > 0 && days === 0
+        ? t("dashboard.customApi.tokenSyncFail")
+        : t("dashboard.customApi.tokenSyncOk", {
+            days,
+            accounts: mine.length,
+            cost: cost.toFixed(2),
+          })
+    );
+  } finally {
+    syncingTokens.value = false;
+  }
 }
 
 async function runTest(): Promise<void> {
@@ -729,7 +784,13 @@ onMounted(async () => {
 
           <div class="field-sep">
             <span class="sec-title">{{ t("dashboard.customApi.fields") }}</span>
-            <button class="btn small" @click="loadPreset">{{ t("dashboard.customApi.preset") }}</button>
+            <span class="preset-row">
+              <select v-model="presetKey" class="input select">
+                <option value="litellm">{{ t("dashboard.customApi.presetLitellm") }}</option>
+                <option value="generic">{{ t("dashboard.customApi.presetGeneric") }}</option>
+              </select>
+              <button class="btn small" @click="loadPreset">{{ t("dashboard.customApi.preset") }}</button>
+            </span>
           </div>
           <p class="hint">{{ t("dashboard.customApi.fieldsHint") }}</p>
 
@@ -887,6 +948,22 @@ onMounted(async () => {
               />
             </label>
           </div>
+
+          <div class="field-sep">
+            <span class="sec-title">{{ t("dashboard.customApi.tokenSyncTitle") }}</span>
+            <button class="btn small" :disabled="syncingTokens" @click="syncTokensNow">
+              {{ syncingTokens ? t("dashboard.customApi.syncing") : t("dashboard.customApi.tokenSyncNow") }}
+            </button>
+          </div>
+          <p class="hint">{{ t("dashboard.customApi.tokenSyncHint") }}</p>
+          <label class="check-row">
+            <input v-model="customDraft.syncTokens" type="checkbox" />
+            <span>{{ t("dashboard.customApi.syncTokens") }}</span>
+          </label>
+          <label class="check-row">
+            <input v-model="customDraft.syncTokenHistory" type="checkbox" />
+            <span>{{ t("dashboard.customApi.syncTokenHistory") }}</span>
+          </label>
         </div>
 
         <div class="modal-actions">
@@ -1180,6 +1257,16 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 8px;
   margin: 4px 0 8px;
+}
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.preset-row .select {
+  width: auto;
+  max-width: 220px;
 }
 .sec-title {
   font-weight: 600;

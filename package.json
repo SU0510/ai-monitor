@@ -1,6 +1,6 @@
 {
   "name": "ai-monitor",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,11 @@
     "typecheck": "vue-tsc --noEmit",
     "test:menubar": "esbuild scripts/menubar.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/menubar.test.mjs --loader:.ts=ts --log-level=error && node node_modules/.cache/menubar.test.mjs",
     "test:heatmap": "esbuild scripts/heatmap.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/heatmap.test.mjs --loader:.ts=ts --log-level=error && node node_modules/.cache/heatmap.test.mjs",
-    "test": "npm run test:menubar && npm run test:heatmap",
+    "test:customapi": "esbuild scripts/customapi.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/customapi.test.mjs --loader:.ts=ts --log-level=error && node node_modules/.cache/customapi.test.mjs",
+    "test:tokensync": "esbuild scripts/tokensync.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/tokensync.test.mjs --loader:.ts=ts --log-level=error && node node_modules/.cache/tokensync.test.mjs",
+    "test:usagestats": "esbuild scripts/usagestats.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/usagestats.test.mjs --loader:.ts=ts --log-level=error && node node_modules/.cache/usagestats.test.mjs",
+    "test:i18n": "esbuild scripts/i18n.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/i18n.test.mjs --loader:.ts=ts --log-level=error --define:__VUE_I18N_FULL_INSTALL__=false --define:__VUE_I18N_LEGACY_API__=false --define:__INTLIFY_PROD_DEVTOOLS__=false && node node_modules/.cache/i18n.test.mjs",
+    "test": "npm run test:menubar && npm run test:heatmap && npm run test:customapi && npm run test:tokensync && npm run test:usagestats && npm run test:i18n",
     "format": "prettier --write src"
   },
   "dependencies": {

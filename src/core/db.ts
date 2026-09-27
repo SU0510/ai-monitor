@@ -398,6 +398,40 @@ export async function upsertDailyUsage(
   );
 }
 
+/**
+ * 写入网关同步来的逐日用量（**覆盖**式，不是累加）。
+ *
+ * 与 upsertDailyUsage 的累加语义刻意不同：网关给的是「那一天的总量」，
+ * 重复同步同一天必须得到同一个结果，累加会让每次采集都把数字翻一倍。
+ *
+ * cost 只在调用方真的给到数字时才写：接口没返回金额字段时传 undefined，
+ * 这样不会把已有的金额（余额差值算出来的）抹成 0。
+ *
+ * source 跟着金额走：真的写入了网关金额才标成 gateway（此后余额差值不再覆盖它，
+ * 见 collector.syncCostFromBalance）。只同步到 token 而没同步到金额时，source 保持原样 ——
+ * 那一行的金额仍归余额差值维护，标成 gateway 会让它再也不更新。
+ */
+export async function setDailyUsage(
+  accountId: number,
+  date: string,
+  usage: { input: number; output: number; cacheHit: number; cost?: number }
+): Promise<void> {
+  const d = getDb();
+  const cost = usage.cost !== undefined && Number.isFinite(usage.cost) ? usage.cost : null;
+  const source = cost === null ? null : "gateway";
+  await d.execute(
+    `INSERT INTO daily_usage (account_id, date, input_tokens, output_tokens, cache_hit_tokens, cost, source)
+     VALUES ($1, $2, $3, $4, $5, COALESCE($6, 0), COALESCE($7, 'gateway'))
+     ON CONFLICT(account_id, date) DO UPDATE SET
+       input_tokens = excluded.input_tokens,
+       output_tokens = excluded.output_tokens,
+       cache_hit_tokens = excluded.cache_hit_tokens,
+       cost = COALESCE($6, daily_usage.cost),
+       source = COALESCE($7, daily_usage.source)`,
+    [accountId, date, usage.input, usage.output, usage.cacheHit, cost, source]
+  );
+}
+
 export async function listDailyUsage(accountId: number, days = 30): Promise<DailyUsageRow[]> {
   const d = getDb();
   return d.select<DailyUsageRow[]>(
@@ -411,20 +445,36 @@ export async function listDailyUsage(accountId: number, days = 30): Promise<Dail
 export async function todayUsageTotal(): Promise<{
   input_tokens: number;
   output_tokens: number;
+  cache_hit_tokens: number;
   cost: number;
   cost_estimated: number;
 }> {
   const d = getDb();
   const rows = await d.select<
-    { input_tokens: number; output_tokens: number; cost: number; cost_estimated: number }[]
+    {
+      input_tokens: number;
+      output_tokens: number;
+      cache_hit_tokens: number;
+      cost: number;
+      cost_estimated: number;
+    }[]
   >(
     `SELECT COALESCE(SUM(input_tokens), 0) AS input_tokens,
             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,
             COALESCE(SUM(cost), 0) AS cost,
             COALESCE(SUM(cost_estimated), 0) AS cost_estimated
      FROM daily_usage WHERE date = date('now', 'localtime')`
   );
-  return rows[0] ?? { input_tokens: 0, output_tokens: 0, cost: 0, cost_estimated: 0 };
+  return (
+    rows[0] ?? {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_hit_tokens: 0,
+      cost: 0,
+      cost_estimated: 0,
+    }
+  );
 }
 
 /** 今日每个账户的用量与消耗 */
@@ -433,6 +483,7 @@ export async function todayUsageByAccount(): Promise<
     account_id: number;
     input_tokens: number;
     output_tokens: number;
+    cache_hit_tokens: number;
     cost: number;
     cost_estimated: number;
   }[]
@@ -443,6 +494,7 @@ export async function todayUsageByAccount(): Promise<
       account_id: number;
       input_tokens: number;
       output_tokens: number;
+      cache_hit_tokens: number;
       cost: number;
       cost_estimated: number;
     }[]
@@ -450,6 +502,7 @@ export async function todayUsageByAccount(): Promise<
     `SELECT account_id,
             COALESCE(SUM(input_tokens), 0) AS input_tokens,
             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,
             COALESCE(SUM(cost), 0) AS cost,
             COALESCE(SUM(cost_estimated), 0) AS cost_estimated
      FROM daily_usage
@@ -491,6 +544,8 @@ export async function listRecentUsage(days = 7): Promise<RecentUsageRow[]> {
 export interface DailyTotalRow {
   date: string;
   tokens: number;
+  input_tokens: number;
+  cache_hit_tokens: number;
   cost: number;
   cost_estimated: number;
   accounts: number;
@@ -501,6 +556,8 @@ export async function dailyTotals(months = 6): Promise<DailyTotalRow[]> {
   return d.select<DailyTotalRow[]>(
     `SELECT date,
             COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+            COALESCE(SUM(input_tokens), 0) AS input_tokens,
+            COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,
             COALESCE(SUM(cost), 0) AS cost,
             COALESCE(SUM(cost_estimated), 0) AS cost_estimated,
             COUNT(DISTINCT account_id) AS accounts
@@ -521,6 +578,7 @@ export interface MonthlyUsageRow {
   cost_estimated: number;
   input_tokens: number;
   output_tokens: number;
+  cache_hit_tokens: number;
   days: number;
 }
 
@@ -532,6 +590,7 @@ export async function monthlyUsageSummary(months = 6): Promise<MonthlyUsageRow[]
             COALESCE(SUM(cost_estimated), 0) AS cost_estimated,
             COALESCE(SUM(input_tokens), 0) AS input_tokens,
             COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,
             COUNT(DISTINCT date) AS days
      FROM daily_usage
      WHERE date >= date('now', 'localtime', $1)

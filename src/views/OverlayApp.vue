@@ -23,6 +23,7 @@ import {
   EVENT_REFRESH_ALL_REQUESTED,
 } from "../core/dashboardStore";
 import { primaryQuota, quotaView, type QuotaView } from "../core/quota";
+import { cacheHitRate, fmtRate } from "../core/usageStats";
 import {
   loadMenubarConfigStore,
   pushMenubar,
@@ -90,6 +91,20 @@ function compactTok(n: number): string {
   return String(n);
 }
 
+/**
+ * 缓存命中率的紧凑文案。没有输入 token 时给「—」：那台机器可能只是没同步到 token
+ * （余额差值记账的账户就是这样），显示 0% 会被误读成「全都没命中」。
+ * input 已包含缓存读取，所以分母直接用 input。
+ */
+function rateText(inputTokens: number, cacheHitTokens: number): string {
+  return inputTokens > 0 ? fmtRate(cacheHitRate(inputTokens, cacheHitTokens)) : "—";
+}
+
+/** 悬浮窗里 token 一律压缩显示，tooltip 里给完整数字用 */
+function fmtTokFull(n: number): string {
+  return n.toLocaleString("zh-CN");
+}
+
 /** 某账户的窗口额度展示数据（无额度返回 null） */
 function accQuota(accId: number): QuotaView | null {
   return quotaView(primaryQuota(quotas.value[accId]), balances.value[accId]?.currency ?? "USD");
@@ -106,17 +121,17 @@ function quotaDetail(q: QuotaView): string {
 const overlayAccounts = computed(() =>
   accounts.value.map((acc) => {
     const quota = accQuota(acc.id);
+    const u = todayByAccount.value[acc.id];
+    const inputTok = u?.input_tokens ?? 0;
+    const cacheTok = u?.cache_hit_tokens ?? 0;
     return {
       id: acc.id,
       name: acc.name,
       balance: balances.value[acc.id]?.balance ?? null,
-      todayCost: displayCost(
-        todayByAccount.value[acc.id]?.cost ?? 0,
-        todayByAccount.value[acc.id]?.cost_estimated ?? 0
-      ),
-      tokens:
-        (todayByAccount.value[acc.id]?.input_tokens ?? 0) +
-        (todayByAccount.value[acc.id]?.output_tokens ?? 0),
+      todayCost: displayCost(u?.cost ?? 0, u?.cost_estimated ?? 0),
+      tokens: inputTok + (u?.output_tokens ?? 0),
+      cacheTok,
+      cacheRate: rateText(inputTok, cacheTok),
       quota: quota ? { ...quota, detail: quotaDetail(quota) } : null,
     };
   })
@@ -492,8 +507,7 @@ onMounted(async () => {
 
   // 恢复位置与模式
   await step("恢复位置与模式", async () => {
-    const posRaw =
-      (await getSetting(await posSettingKey())) ?? (await getSetting("overlay_pos"));
+    const posRaw = (await getSetting(await posSettingKey())) ?? (await getSetting("overlay_pos"));
     if (posRaw) {
       const m = await getLogicalMetrics();
       const { x, y } = JSON.parse(posRaw) as { x: number; y: number };
@@ -673,7 +687,12 @@ onUnmounted(() => {
                 {{ a.balance !== null ? fmt(a.balance) : "--" }}
               </span>
               <span class="m-cost">-¥{{ fmt(a.todayCost) }}</span>
-              <span class="m-tok">{{ compactTok(a.tokens) }} tok</span>
+              <span class="m-tok">
+                <b>{{ compactTok(a.tokens) }} tok</b>
+                <i :title="t('overlay.cacheHitTokens', { hit: fmtTokFull(a.cacheTok) })">
+                  {{ t("overlay.cacheLabel") }} {{ compactTok(a.cacheTok) }} · {{ a.cacheRate }}
+                </i>
+              </span>
             </div>
           </div>
           <!-- 时间窗口额度（LiteLLM 的 3 小时限额） -->
@@ -694,6 +713,12 @@ onUnmounted(() => {
           t("overlay.today", {
             in: compactTok(today.input_tokens),
             out: compactTok(today.output_tokens),
+          })
+        }}</span>
+        <span class="tokens cache">{{
+          t("overlay.todayCache", {
+            hit: compactTok(today.cache_hit_tokens),
+            rate: rateText(today.input_tokens, today.cache_hit_tokens),
           })
         }}</span>
         <span class="cost">¥{{ fmt(displayCost(today.cost, today.cost_estimated)) }}</span>
@@ -960,15 +985,31 @@ onUnmounted(() => {
   color: #9ca3af;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  min-width: 64px;
   text-align: right;
   white-space: nowrap;
+  /* 两行：上面是今日 token 合计，下面是缓存命中 token 与命中率。
+     悬浮窗宽度固定 320，横向加列会挤掉账户名，所以往纵向放。 */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+.m-tok > b {
+  font-weight: 600;
+}
+.m-tok > i {
+  font-style: normal;
+  font-size: 9px;
+  color: #6b7280;
 }
 
 .drawer-footer {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 宽度只有 320，加了缓存一列后一行放不下就换行，而不是被裁掉 */
+  flex-wrap: wrap;
+  row-gap: 2px;
   padding: 6px 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   font-size: 11px;
@@ -981,6 +1022,9 @@ onUnmounted(() => {
 }
 .tokens {
   font-variant-numeric: tabular-nums;
+}
+.tokens.cache {
+  color: #6b7280;
 }
 .cost {
   color: #fbbf24;

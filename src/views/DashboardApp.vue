@@ -53,8 +53,22 @@ function hidePanel(): void {
   void invoke("hide_dashboard_command");
 }
 
+/**
+ * Cmd+W 收起面板。
+ * 本应用是纯菜单栏应用（LSUIElement），没有菜单栏，macOS 因此不会替我们处理这个快捷键，
+ * 得自己在页面里接住。这里不区分 Shift：Cmd+W 与 Cmd+Shift+W 都只是收起面板。
+ */
+function onKeydown(e: KeyboardEvent): void {
+  if (!e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key.toLowerCase() !== "w") return;
+  e.preventDefault();
+  hidePanel();
+}
+
 let unlisten: UnlistenFn | null = null;
 onMounted(async () => {
+  // 捕获阶段监听：焦点在输入框里时也要能收起面板（Cmd+W 是窗口级快捷键）
+  window.addEventListener("keydown", onKeydown, true);
   // 每一步都单独兜错：读标签页偏好失败、或数据库初始化失败，都不该连带把
   // 事件监听和自动采集一起跳过——那样面板会一直显示不刷新。
   try {
@@ -76,6 +90,7 @@ onMounted(async () => {
   startAutoCollect();
 });
 onUnmounted(() => {
+  window.removeEventListener("keydown", onKeydown, true);
   unlisten?.();
 });
 </script>

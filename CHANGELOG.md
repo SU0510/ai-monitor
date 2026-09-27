@@ -2,6 +2,90 @@
 
 所有重要变更记录于此文件。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.13] - 2026-09-27
+
+### 新增
+- **从网关同步逐日用量（token + 当日消耗）**：自定义 API 新增「逐日用量同步（token / 消耗）」段，
+  用网关自己的 `/user/daily/activity`（LiteLLM 形态）拉取每天的输入 / 输出 / 缓存命中 token
+  **与当天 spend**，写入本地 `daily_usage`。此后用量统计的 token 和金额都以网关为准，
+  热力图与月度账单也因此有了完整历史 —— 此前只有本地代理会记 token（余额差值记账的账户
+  在界面上 token 恒为 0），而余额差值只能覆盖应用开始运行之后的日子。
+  - 两个开关：`随采集自动同步 token`、`同步全部历史`（不勾选则每次只同步最近 7 天）；
+    另有一个「立即同步」按钮可手动触发。
+  - **该接口是分页的**：不传 `page_size` 只会返回第一页，79 天的历史看起来只有最近 7 天。
+    现在既传 `page_size`（默认 1000）又跟着 `metadata.has_more` 翻页，两条路都能取全；
+    某一页偶发失败时保留已取到的数据，不会让整轮同步作废。
+  - 写入是**覆盖式**的（同一天重复同步结果相同，不会翻倍）。
+  - 金额：网关的 `spend` 与该账户余额出自同一套预算账（余额就是 `max_budget - spend`），
+    单位一致，因此写进 `cost` 不会混单位；且它覆盖完整自然日，比余额差值更准。
+    所以**网关金额优先**：`syncCostFromBalance` 不再覆盖 `source='gateway'` 的日期。
+    未配置金额字段时 source 保持原样、余额差值照常接管，不会被误冻结。
+  - 新增 `source='gateway'` 来源，并把「最近记录」里的来源标签从「手动 / 其他一律算代理」
+    补全成 手动 / 代理 / 余额差值 / 网关。
+- **余额差值退居兜底**：只要账户的自定义 API 配了逐日消耗字段（`tokenSync.costField`），
+  就不再对它跑余额差值；改为「能查询的一律用查询，查不到的平台才用差值」。
+  余额差值只看得见本应用开始运行之后的消耗（首日与当天必然偏小），
+  而网关按自然日给数，本来就该是主口径。
+- **缓存命中率**：`daily_usage.cache_hit_tokens` 此前只在热力图气泡里露过一面，
+  现在补进今日用量（缓存命中 + 命中率两张卡）、月度账单（每月一行命中率）、
+  最近 7 天记录（新增两列）、热力图气泡（命中数与命中率）与 CSV 导出。
+  口径写死在界面上可查：网关的输入 token **已包含**缓存读取，所以
+  命中率 = `cache_hit / input_tokens`，而不是 `cache_hit / 未命中`；
+  没有输入 token 的日期显示「—」而不是 0.0%（两者的含义不同）。
+- 新增 `src/core/usageStats.ts`（`cacheHitRate` / `fmtRate`）
+  与 `scripts/usagestats.test.mjs`（21 条断言，`npm run test:usagestats`）。
+- 新增 `src/core/tokenSync.ts`、`scripts/tokensync.test.mjs`（51 条断言，夹具取自真实网关响应）。
+- **自定义 API 增加「通用（/v1/usage）」预设**：`GET {baseUrl}/v1/usage` + Bearer 鉴权，
+  余额按 `remaining → quota.remaining → balance` 依次回退，币种按 `unit → quota.unit → USD` 回退，
+  有效性按 `is_active → isValid → 视为有效` 判定。「字段」一栏的按钮改成下拉选择预设，默认仍是 LiteLLM。
+- 为支撑上面的模板，字段规则新增两项声明式能力：
+  - `FieldRule.altSources`：主路径取不到值时的候选路径，对应 extractor 里的 `a ?? b ?? c`。
+    注意取到 `0` 算取到值（余额为 0 是合法结果，不能被候选路径顶掉）。
+  - `CustomApiConfig.validPath` / `validAltPaths`：「取到假值才无效、取不到即有效」，
+    与原有的 `invalidPath`（取到真值即无效）方向相反，对应 `isValid: resp.is_active ?? true`。
+- 新增 `scripts/customapi.test.mjs`（45 条断言，`npm run test:customapi`），
+  并把纯解析逻辑从 `requestCustomBalance` 里拆成可单测的 `parseCustomResponse`。
+- **悬浮窗显示缓存命中**：账户行原来只有一行 `xx tok`，现在第二行补上「缓存 12.3M · 86.5%」，
+  完整命中数放在 `title` 里（悬浮窗宽度 320px，压缩显示才放得下）；展开后的今日汇总也多一段
+  「缓存 1.2B tok · 85.0%」。胶囊态（收起后那一小条）刻意不加——宽度不够，
+  展开即可见。
+- **纯菜单栏应用：不再出现在程序坞**。两层一起做，因为各有各的适用场景：
+  - `src-tauri/Info.plist` 里 `LSUIElement = true`（Tauri 会把它合并进打包后的 Info.plist）。
+    这一层管**发行版**：macOS 从启动第一帧就当它是后台应用，程序坞和 Cmd+Tab 里都不会出现。
+  - 运行时的 `hide_from_dock()`（`setActivationPolicy(Accessory)`）保留，它管 **`tauri dev`** ——
+    开发模式不打包、读不到 Info.plist，只能靠运行时那条。副作用是启动瞬间程序坞里会闪一下。
+- **面板可用 Cmd+W 收起**：本应用没有菜单栏（见上），macOS 不会替我们处理这个快捷键，
+  所以在页面里自己接了一层 `keydown`（捕获阶段，焦点在输入框里也生效），
+  收起走的是和「隐藏到托盘」同一个 `hide_dashboard_command`。
+  另有两条独立通路顺带覆盖：Tauri 默认菜单里的 File/Window → Close Window [⌘W]，
+  以及关窗请求最终落到的 Rust `CloseRequested` 处理器。
+- 新增 `scripts/i18n.test.mjs`（30 条断言，`npm run test:i18n`）：中英键集合必须一致、
+  同一个键在两种语言里的占位符必须一致、`.vue` 里字面量 `t("...", { ... })` 传的参数
+  必须和语言包占位符对得上（对不上会把 `{days}` 这种字面量直接渲染给用户，且不报错），
+  最后用真的 `vue-i18n` 渲染一遍缓存相关文案。
+  这一层只能从源码侧验：WKWebView 不向辅助功能暴露 DOM 节点，界面文案读不出来。
+
+### 修复
+- `dashboard.heatmapHint` 的调用处传了 `{ months }`，但语言包里没有这个占位符，等于白传
+  （范围已经写在标题「用量热力图（近 {months} 个月）」里，所以去掉这个参数，
+  而不是把范围在提示里再说一遍）。由新增的 `scripts/i18n.test.mjs` 扫出。
+- 「今日用量」下那句「token 数据由统一代理自动记录」已经过时：现在写明两种来源。
+- 「最近记录」的来源列原来只区分「手动 / 其他一律显示代理」，余额差值行被错标成「代理」。
+
+### 说明
+- **年初到 6/16 的用量在网关侧已经不存在**（实测两个 key）：`/user/daily/activity` 最早只到
+  6/16，逐条请求的 `/spend/logs` 查 1/1~6/15 返回 0 行、第一条恰好是 6/16；
+  而 `user_info.created_at` 也是 6/16（key 本身建于 5/20、5/28）——即网关上的 user 对象是
+  6/16 重建的。`/key/list` 又只返回当前 key 自己（非管理员看不到别的 user），
+  所以那段时间的用量要么已从网关删除，要么挂在另一个我们够不到的 user 下。
+  本地这边没有丢数据，也没有可用的接口能取回更早的日期。
+- 通用预设沿用通用默认的限额/单价同步路径（LiteLLM 形态）。响应里没有这些路径时
+  限额块不展示、单价同步会失败但不影响余额查询，对普通接口无副作用。
+- **既有配置不会自动开启自动同步**：`syncTokens` / `syncTokenHistory` 默认都是 false，
+  老配置里根本没有这两个键。要让「查询优先」在每次采集时生效，得在「Token 用量同步」段里勾选。
+- 界面上的货币符号仍是写死的 `¥`，而该网关实际按美元记账（余额 85.91 USD、max_budget 100）。
+  这一处早于本次改动就存在，本次未处理。
+
 ## [0.2.12] - 2026-09-27
 
 ### 变更

@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { dailyTotals, initDb } from "../core/db";
 import { displayCost, fmt } from "../core/dashboardStore";
 import { buildHeatmapCells, monthLabels, weekdayLabels } from "../core/heatmap";
+import { cacheHitRate, fmtRate } from "../core/usageStats";
 
 const props = withDefaults(defineProps<{ months?: number }>(), { months: 6 });
 
@@ -12,7 +13,12 @@ const { t, locale } = useI18n();
 const wrapEl = ref<HTMLDivElement | null>(null);
 /** date -> 当天合计。深浅用「当天消耗」而不是 token：
  *  余额差值记账（source=balance）只写金额、token 恒为 0，按 token 上色会整张图全空。 */
-const totals = ref<Map<string, { tokens: number; cost: number; costEstimated: number }>>(new Map());
+const totals = ref<
+  Map<
+    string,
+    { tokens: number; inputTokens: number; cacheHit: number; cost: number; costEstimated: number }
+  >
+>(new Map());
 
 /** 当天的度量值：费用优先用权威值 cost，没有则回退估算值 */
 function spendOf(v?: { cost: number; costEstimated: number }): number {
@@ -49,6 +55,17 @@ function tipTokens(date: string): string {
   return (totals.value.get(date)?.tokens ?? 0).toLocaleString("zh-CN");
 }
 
+function tipCache(date: string): string {
+  return (totals.value.get(date)?.cacheHit ?? 0).toLocaleString("zh-CN");
+}
+
+/** 命中率；当天没有输入 token（例如只有余额差值记账的日期）时不做除法 */
+function tipRate(date: string): string {
+  const v = totals.value.get(date);
+  if (!v || v.inputTokens <= 0) return "—";
+  return fmtRate(cacheHitRate(v.inputTokens, v.cacheHit));
+}
+
 function onEnter(e: MouseEvent, cell: (typeof cells.value)[number], index: number): void {
   const host = wrapEl.value;
   const target = e.currentTarget as HTMLElement | null;
@@ -68,9 +85,18 @@ function tipDate(date: string): string {
 
 async function load(): Promise<void> {
   const rows = await dailyTotals(props.months);
-  const m = new Map<string, { tokens: number; cost: number; costEstimated: number }>();
+  const m = new Map<
+    string,
+    { tokens: number; inputTokens: number; cacheHit: number; cost: number; costEstimated: number }
+  >();
   for (const r of rows) {
-    m.set(r.date, { tokens: r.tokens, cost: r.cost, costEstimated: r.cost_estimated });
+    m.set(r.date, {
+      tokens: r.tokens,
+      inputTokens: r.input_tokens,
+      cacheHit: r.cache_hit_tokens,
+      cost: r.cost,
+      costEstimated: r.cost_estimated,
+    });
   }
   totals.value = m;
 }
@@ -113,7 +139,7 @@ onMounted(async () => {
     </div>
 
     <div class="hm-foot">
-      <span class="hm-hint">{{ t("dashboard.heatmapHint", { months }) }}</span>
+      <span class="hm-hint">{{ t("dashboard.heatmapHint") }}</span>
       <div class="hm-legend">
         <span>{{ t("dashboard.heatmapLess") }}</span>
         <span class="hm-cell lv0" />
@@ -141,6 +167,11 @@ onMounted(async () => {
       <div v-if="totals.get(tip.cell.date)?.tokens" class="hm-tip-row">
         <span>{{ t("dashboard.heatmapTokens") }}</span>
         <b>{{ tipTokens(tip.cell.date) }}</b>
+      </div>
+      <!-- 缓存命中同理：没同步到 token 的日期（含旧数据）不显示这两行 -->
+      <div v-if="totals.get(tip.cell.date)?.cacheHit" class="hm-tip-row">
+        <span>{{ t("dashboard.cacheHit") }}</span>
+        <b>{{ tipCache(tip.cell.date) }}（{{ tipRate(tip.cell.date) }}）</b>
       </div>
     </div>
   </div>

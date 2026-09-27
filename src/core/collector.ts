@@ -11,18 +11,32 @@ import {
   type AccountRow,
   type BalanceInfo,
 } from "./db";
-import { getProvider } from "../providers";
+import { getProvider, getCustomConfig } from "../providers";
 import { checkAlerts } from "./alert";
 import { syncPricesIfNeeded } from "./platformSync";
+import { syncTokensForAccount } from "./tokenSync";
 
 /**
- * 用余额差值同步每日真实消耗：
+ * 用余额差值兜底同步每日消耗：
  * 每天首条余额快照 - 当天最后一条 = 当天实际扣费（充值会使差值失真，忽略负值）
- * 结果写入 daily_usage.cost（权威值）；token×单价估算在 cost_estimated（备用）
+ *
+ * 这是**兜底**手段，只在账户查不到逐日消耗时才用：
+ * 网关能按天给出 spend（tokenSync.costField）时优先用查询结果 —— 查询覆盖完整自然日，
+ * 而余额差值只能看到「本应用开始运行之后」的那部分，首日和当天都会偏小；
+ * 网关的预算窗口也可能是滚动 24 小时，跨窗口时按自然日切分会进一步失真。
+ * 因此这里先按账户筛掉「有查询能力」的，再用 source<>'gateway' 兜住已经写入网关金额的日期。
  */
 export async function syncCostFromBalance(): Promise<void> {
   try {
     const d = getDb();
+
+    // 哪些账户能查到逐日消耗？这些账户不再走差值（配置里配了金额字段即视为有查询能力）
+    const accounts = await listAccounts();
+    const queryCapable = new Set<number>();
+    for (const a of accounts) {
+      if (getCustomConfig(a.provider_id)?.tokenSync?.costField) queryCapable.add(a.id);
+    }
+
     // 每天每条余额快照（含日期）；只扫近 45 天，避免全表读入 JS
     const rows = await d.select<
       { account_id: number; balance: number; fetched_at: string; day: string }[]
@@ -55,15 +69,17 @@ export async function syncCostFromBalance(): Promise<void> {
     }
     for (const [accIdStr, days] of Object.entries(byAcc)) {
       const accId = Number(accIdStr);
+      if (queryCapable.has(accId)) continue; // 能查询的账户：金额一律以网关为准，不用差值
       for (const dayInfo of days) {
         const diff = dayInfo.consumed; // 正 = 消耗
         if (diff <= 0.0001) continue; // 充值日或余额未变，跳过
-        // 余额差值 = 平台真实扣费，是权威值；覆盖代理记账的 token×单价估算
-        // （代理估算会因缓存折扣/价格变动/漏记而偏差；余额差值最准）
+        // 兜底账户里，余额差值覆盖代理记账的 token×单价估算（估算会因缓存折扣/
+        // 价格变动/漏记而偏差）。已经写入网关金额的日期仍然不动。
         await d.execute(
           `INSERT INTO daily_usage (account_id, date, cost, source)
            VALUES ($1, $2, $3, 'balance')
-           ON CONFLICT(account_id, date) DO UPDATE SET cost = excluded.cost, source = 'balance'`,
+           ON CONFLICT(account_id, date) DO UPDATE SET cost = excluded.cost, source = 'balance'
+           WHERE daily_usage.source <> 'gateway'`,
           [accId, dayInfo.day, diff]
         );
       }
@@ -89,7 +105,29 @@ export async function collectAccount(account: AccountRow): Promise<BalanceInfo> 
   for (const q of info.quotas ?? []) {
     await saveQuotaSnapshot(account.id, q, info.currency);
   }
+  await syncTokensIfEnabled(account, apiKey);
   return info;
+}
+
+/**
+ * 按配置同步该账户的逐日 token 用量（以及当日消耗金额）。
+ * 失败只记日志、不往上抛：token 是补充信息，不能因为它把整轮余额采集算作失败。
+ */
+async function syncTokensIfEnabled(account: AccountRow, apiKey: string): Promise<void> {
+  try {
+    const cfg = getCustomConfig(account.provider_id);
+    if (!cfg?.syncTokens || !cfg.tokenSync) return;
+    const r = await syncTokensForAccount(account.id, cfg, apiKey, {
+      history: cfg.syncTokenHistory ?? false,
+    });
+    if (r.days > 0) {
+      console.info(
+        `[token] ${account.name} 同步 ${r.days} 天用量（消耗合计 ${r.cost.toFixed(4)}）`
+      );
+    }
+  } catch (e) {
+    console.error(`token 用量同步失败（${account.name}）`, e);
+  }
 }
 
 /** 全量采集（跳过未启用/不支持自动查询的账户） */

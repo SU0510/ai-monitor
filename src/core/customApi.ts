@@ -16,6 +16,11 @@ export type FieldTransform = "none" | "subtract" | "divide" | "multiply";
 export interface FieldRule {
   /** JSON 点路径（支持数组下标），如 "info.max_budget" 或 "data.balances[0].remaining" */
   source: string;
+  /**
+   * 主路径取不到值时的候选路径，按顺序依次尝试（对应 extractor 里的 `a ?? b ?? c`）。
+   * 注意「取到 0」算取到值：余额为 0 是合法结果，不能被后面的候选路径顶掉。
+   */
+  altSources?: string[];
   /** 转换方式：none 直接取值；subtract/divide/multiply 对数值做运算 */
   transform: FieldTransform;
   /** 数值操作数（divide/multiply 必填；subtract 可留空改用 operandSource） */
@@ -83,6 +88,42 @@ export interface PriceSyncConfig {
   exchangeRate: number;
 }
 
+/**
+ * 逐日 token 用量接口的提取规则（LiteLLM `/user/daily/activity` 形态）。
+ *
+ * 用来把网关自己记的逐日 token 搬进本地 daily_usage：本地代理只在流量经过它时
+ * 才记得到 token，余额差值记账更是只有金额，所以「用量统计」里的 token 一直不准。
+ */
+export interface TokenSyncConfig {
+  /** 逐日用量接口路径，如 "/user/daily/activity" */
+  path: string;
+  /** 结果数组的 JSON 路径，如 "results" */
+  listPath: string;
+  /** 日期字段，如 "date" */
+  dateField: string;
+  /** 指标对象路径，如 "metrics"；留空表示指标就在条目本身 */
+  metricsPath?: string;
+  /** 输入 token 字段，如 "prompt_tokens" */
+  inputField: string;
+  /** 输出 token 字段，如 "completion_tokens" */
+  outputField: string;
+  /** 缓存命中 token 字段，如 "cache_read_input_tokens" */
+  cacheReadField?: string;
+  /**
+   * 当日消耗金额字段，如 "spend"。取到数字就一并写进 cost，
+   * 让热力图与月度账单也有历史金额（该值与余额出自同一套预算账，单位一致）。
+   * 留空或取不到时不动金额列，对没有该字段的接口无副作用。
+   */
+  costField?: string;
+  /**
+   * 每页条数。此类接口按页返回，**不传 page_size 只会拿到第一页** ——
+   * 79 天的历史会看起来只有最近 7 天。默认 1000（实测一次即可取回全部历史）。
+   */
+  pageSize?: number;
+  /** 最多翻多少页，防止 has_more 恒为真时死循环 */
+  maxPages?: number;
+}
+
 export interface CustomApiConfig {
   /** 实例唯一标识，provider id = `custom:<id>` */
   id: string;
@@ -106,10 +147,23 @@ export interface CustomApiConfig {
   quota?: QuotaConfig;
   /** 模型单价同步规则；缺省走 LiteLLM 默认值 */
   priceSync?: PriceSyncConfig;
+  /** 逐日 token 用量同步规则；缺省走 LiteLLM 默认值 */
+  tokenSync?: TokenSyncConfig;
+  /** 是否随采集自动同步 token 用量（默认关；关掉则只有手动才会同步） */
+  syncTokens?: boolean;
+  /** 同步 token 时是否拉取全部历史（关掉则只同步最近若干天） */
+  syncTokenHistory?: boolean;
   /** 是否自动注入 Authorization: Bearer <key> */
   bearerAuth: boolean;
   /** 封禁/无效判定字段路径（为真则视为无效），如 "info.blocked" */
   invalidPath?: string;
+  /**
+   * 「有效」判定字段路径：取到假值（false/0/""）则视为无效，取不到则视为有效。
+   * 与 invalidPath 方向相反；对应的 extractor 写法是 `isValid: resp.is_active ?? true`。
+   */
+  validPath?: string;
+  /** validPath 取不到值时的候选路径，按顺序尝试（如 `is_active ?? isValid`） */
+  validAltPaths?: string[];
   /** 封禁时的提示文案 */
   invalidMessage?: string;
 }
@@ -140,6 +194,22 @@ export function litellmPriceDefaults(): PriceSyncConfig {
     costUnit: "perToken",
     currency: "USD",
     exchangeRate: 1,
+  };
+}
+
+/** LiteLLM `/user/daily/activity` 的逐日用量默认路径 */
+export function litellmTokenSyncDefaults(): TokenSyncConfig {
+  return {
+    path: "/user/daily/activity",
+    listPath: "results",
+    dateField: "date",
+    metricsPath: "metrics",
+    inputField: "prompt_tokens",
+    outputField: "completion_tokens",
+    cacheReadField: "cache_read_input_tokens",
+    costField: "spend",
+    pageSize: 1000,
+    maxPages: 20,
   };
 }
 
@@ -181,9 +251,60 @@ export function litellmPreset(): CustomApiConfig {
     },
     quota: litellmQuotaDefaults(),
     priceSync: litellmPriceDefaults(),
+    tokenSync: litellmTokenSyncDefaults(),
+    syncTokens: false,
+    syncTokenHistory: false,
     bearerAuth: true,
     invalidPath: "info.blocked",
     invalidMessage: "API Key 已被封禁",
+  };
+}
+
+/**
+ * 通用余额接口模板：`GET {baseUrl}/v1/usage`，Bearer 鉴权。
+ *
+ * 对应这样一份 extractor：
+ *   remaining = resp.remaining ?? resp.quota.remaining ?? resp.balance
+ *   unit      = resp.unit ?? resp.quota.unit ?? "USD"
+ *   isValid   = resp.is_active ?? resp.isValid ?? true
+ * 用本应用的声明式写法表达：路径候选放进 altSources / validAltPaths，
+ * 「取不到就当有效」由 validPath 的判定方向保证（只有显式假值才算无效）。
+ *
+ * 额度窗口与单价同步沿用通用默认值（LiteLLM 形态）；响应里没有那些路径时
+ * 限额块不展示、单价同步也不会被触发，对普通接口无副作用。
+ */
+export function genericUsagePreset(): CustomApiConfig {
+  return {
+    id: newConfigId(),
+    name: "",
+    baseUrl: "",
+    path: "/v1/usage",
+    method: "GET",
+    headers: {},
+    query: {},
+    body: "",
+    fields: {
+      balance: {
+        source: "remaining",
+        altSources: ["quota.remaining", "balance"],
+        transform: "none",
+        clampMin: 0,
+      },
+      currency: {
+        source: "unit",
+        altSources: ["quota.unit"],
+        transform: "none",
+      },
+    },
+    quota: litellmQuotaDefaults(),
+    priceSync: litellmPriceDefaults(),
+    tokenSync: litellmTokenSyncDefaults(),
+    syncTokens: false,
+    syncTokenHistory: false,
+    bearerAuth: true,
+    validPath: "is_active",
+    validAltPaths: ["isValid"],
+    invalidMessage: "账户无效或已被封禁",
   };
 }
 
@@ -198,6 +319,7 @@ export async function loadCustomConfigs(): Promise<CustomApiConfig[]> {
       ...c,
       quota: c.quota ?? litellmQuotaDefaults(),
       priceSync: c.priceSync ?? litellmPriceDefaults(),
+      tokenSync: c.tokenSync ?? litellmTokenSyncDefaults(),
     }));
   } catch {
     return [];
@@ -241,9 +363,23 @@ export function toNumber(v: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * 按顺序尝试多个路径，返回第一个「取到了值」的结果。
+ * 只有 undefined / null 算取不到：0 与 "" 都是有效结果，不能被后面的候选顶掉
+ * （余额 0 必须原样返回，否则会读成另一个字段的金额）。
+ */
+export function getByPaths(obj: unknown, paths: readonly (string | undefined)[]): unknown {
+  for (const p of paths) {
+    if (!p) continue;
+    const v = getByPath(obj, p);
+    if (v !== undefined && v !== null) return v;
+  }
+  return undefined;
+}
+
 function extractField(resp: unknown, rule: FieldRule | undefined): number | string | undefined {
   if (!rule) return undefined;
-  const raw = getByPath(resp, rule.source);
+  const raw = getByPaths(resp, [rule.source, ...(rule.altSources ?? [])]);
   if (rule.transform === "none") {
     const n = toNumber(raw);
     return n !== undefined ? n : typeof raw === "string" ? raw : undefined;
@@ -358,34 +494,21 @@ export interface ExtractResult {
 }
 
 /**
- * 发起一次自定义余额查询并解析出 BalanceInfo。
- * `requestBody` 供测试请求复用：传入时用给定体，否则用配置里的 body。
+ * 把一次接口响应解析成 BalanceInfo（纯函数，不碰网络，便于单测）。
+ *
+ * 有效性两条判定方向相反，invalidPath 优先：
+ * - invalidPath 取到真值 → 无效（`isValid: !resp.blocked`）
+ * - validPath 取到假值 → 无效，取不到 → 有效（`isValid: resp.is_active ?? true`）
  */
-export async function requestCustomBalance(
-  cfg: CustomApiConfig,
-  apiKey: string,
-  requestBody?: string
-): Promise<ExtractResult> {
-  let bodyValue: unknown = undefined;
-  const bodyText = requestBody !== undefined ? requestBody : cfg.body;
-  if (bodyText && bodyText.trim() !== "") {
-    try {
-      bodyValue = JSON.parse(bodyText);
-    } catch {
-      bodyValue = bodyText;
-    }
-  }
-
-  const resp = await invoke<unknown>("http_request", {
-    url: buildUrl(cfg),
-    method: cfg.method,
-    headers: buildHeaders(cfg, apiKey),
-    body: bodyValue ?? null,
-  });
-
-  // 封禁判定
+export function parseCustomResponse(cfg: CustomApiConfig, resp: unknown): ExtractResult {
   if (cfg.invalidPath && getByPath(resp, cfg.invalidPath)) {
     throw new Error(cfg.invalidMessage ?? "账户无效或已被封禁");
+  }
+  if (cfg.validPath || cfg.validAltPaths?.length) {
+    const v = getByPaths(resp, [cfg.validPath, ...(cfg.validAltPaths ?? [])]);
+    if (v !== undefined && !v) {
+      throw new Error(cfg.invalidMessage ?? "账户无效或已被封禁");
+    }
   }
 
   const balance = applyClamp(
@@ -415,4 +538,33 @@ export async function requestCustomBalance(
     },
     raw: resp,
   };
+}
+
+/**
+ * 发起一次自定义余额查询并解析出 BalanceInfo。
+ * `requestBody` 供测试请求复用：传入时用给定体，否则用配置里的 body。
+ */
+export async function requestCustomBalance(
+  cfg: CustomApiConfig,
+  apiKey: string,
+  requestBody?: string
+): Promise<ExtractResult> {
+  let bodyValue: unknown = undefined;
+  const bodyText = requestBody !== undefined ? requestBody : cfg.body;
+  if (bodyText && bodyText.trim() !== "") {
+    try {
+      bodyValue = JSON.parse(bodyText);
+    } catch {
+      bodyValue = bodyText;
+    }
+  }
+
+  const resp = await invoke<unknown>("http_request", {
+    url: buildUrl(cfg),
+    method: cfg.method,
+    headers: buildHeaders(cfg, apiKey),
+    body: bodyValue ?? null,
+  });
+
+  return parseCustomResponse(cfg, resp);
 }

@@ -11,6 +11,7 @@ import {
   type ModelUsageRow,
 } from "../core/db";
 import { today, fmt, displayCost, showToast } from "../core/dashboardStore";
+import { cacheHitRate, fmtRate } from "../core/usageStats";
 import UsageHeatmap from "./UsageHeatmap.vue";
 
 const { t } = useI18n();
@@ -25,6 +26,28 @@ const exporting = ref(false);
 
 function fmtTok(n: number): string {
   return n.toLocaleString("zh-CN");
+}
+
+/**
+ * 缓存命中率文案。没有输入 token 时显示「—」而不是 0.0%：
+ * 那两种情况含义完全不同（一个是「全部未命中」，一个是「没有数据」）。
+ * input_tokens 已包含缓存读取，所以分母直接用它。
+ */
+function rateText(inputTokens: number, cacheHitTokens: number): string {
+  return inputTokens > 0 ? fmtRate(cacheHitRate(inputTokens, cacheHitTokens)) : "—";
+}
+
+/** 来源标签：manual=手动记账，proxy=本地代理，balance=余额差值，gateway=网关同步 */
+function sourceLabel(source: string): string {
+  const key =
+    source === "manual"
+      ? "manual"
+      : source === "balance"
+        ? "balance"
+        : source === "gateway"
+          ? "gateway"
+          : "proxy";
+  return t(`dashboard.${key}`);
 }
 
 function isCurrentMonth(month: string): boolean {
@@ -47,9 +70,19 @@ function exportCsv(): void {
       const rows = await listRecentUsage(90);
       const esc = (s: string | number) => `"${String(s).replace(/"/g, '""')}"`;
       const lines = [
-        ["date", "account", "input_tokens", "output_tokens", "cost", "source"].join(","),
-        ...rows.map((r) =>
-          `${esc(r.date)},${esc(r.account_name)},${r.input_tokens},${r.output_tokens},${r.cost},${esc(r.source)}`
+        [
+          "date",
+          "account",
+          "input_tokens",
+          "output_tokens",
+          "cache_hit_tokens",
+          "cache_hit_rate",
+          "cost",
+          "source",
+        ].join(","),
+        ...rows.map(
+          (r) =>
+            `${esc(r.date)},${esc(r.account_name)},${r.input_tokens},${r.output_tokens},${r.cache_hit_tokens},${cacheHitRate(r.input_tokens, r.cache_hit_tokens).toFixed(4)},${r.cost},${esc(r.source)}`
         ),
       ];
       const path = await invoke<string>("export_usage_csv", { csv: lines.join("\n") });
@@ -75,13 +108,23 @@ onMounted(loadUsage);
         </button>
       </div>
       <div class="usage-grid">
-        <div class="usage-item">
+        <div class="usage-item" :title="t('dashboard.inputTokensInclCache')">
           <div class="usage-label">{{ t("dashboard.inputTokens") }}</div>
           <div class="usage-value">{{ fmtTok(today.input_tokens) }}</div>
         </div>
         <div class="usage-item">
           <div class="usage-label">{{ t("dashboard.outputTokens") }}</div>
           <div class="usage-value">{{ fmtTok(today.output_tokens) }}</div>
+        </div>
+        <div class="usage-item" :title="t('dashboard.inputTokensInclCache')">
+          <div class="usage-label">{{ t("dashboard.cacheHit") }}</div>
+          <div class="usage-value">{{ fmtTok(today.cache_hit_tokens) }}</div>
+        </div>
+        <div class="usage-item">
+          <div class="usage-label">{{ t("dashboard.cacheHitRate") }}</div>
+          <div class="usage-value">
+            {{ rateText(today.input_tokens, today.cache_hit_tokens) }}
+          </div>
         </div>
         <div class="usage-item">
           <div class="usage-label">{{ t("dashboard.estimatedCost") }}</div>
@@ -100,14 +143,22 @@ onMounted(loadUsage);
       <h3>{{ t("dashboard.monthlyTitle") }}</h3>
       <div v-if="monthly.length === 0" class="empty-tip">{{ t("dashboard.noUsage") }}</div>
       <div v-else class="monthly-grid">
-        <div v-for="m in monthly" :key="m.month" class="month-card" :class="{ current: isCurrentMonth(m.month) }">
+        <div
+          v-for="m in monthly"
+          :key="m.month"
+          class="month-card"
+          :class="{ current: isCurrentMonth(m.month) }"
+        >
           <div class="month-name">{{ m.month }}</div>
           <div class="month-cost">¥{{ fmt(displayCost(m.cost, m.cost_estimated)) }}</div>
           <div class="month-meta">
-            {{ fmtTok(m.input_tokens + m.output_tokens) }} {{ t("dashboard.monthlyTokens") }} · {{
-              m.days
-            }}
+            {{ fmtTok(m.input_tokens + m.output_tokens) }} {{ t("dashboard.monthlyTokens") }} ·
+            {{ m.days }}
             {{ t("dashboard.monthlyDays") }}
+          </div>
+          <div class="month-meta">
+            {{ t("dashboard.cacheHit") }} {{ fmtTok(m.cache_hit_tokens) }} ·
+            {{ rateText(m.input_tokens, m.cache_hit_tokens) }}
           </div>
         </div>
       </div>
@@ -148,6 +199,8 @@ onMounted(loadUsage);
             <th>{{ t("dashboard.account") }}</th>
             <th>{{ t("dashboard.input") }}</th>
             <th>{{ t("dashboard.output") }}</th>
+            <th>{{ t("dashboard.cacheHit") }}</th>
+            <th>{{ t("dashboard.cacheHitRate") }}</th>
             <th>{{ t("dashboard.cost") }}</th>
             <th>{{ t("dashboard.source") }}</th>
           </tr>
@@ -158,8 +211,10 @@ onMounted(loadUsage);
             <td>{{ u.account_name }}</td>
             <td>{{ fmtTok(u.input_tokens) }}</td>
             <td>{{ fmtTok(u.output_tokens) }}</td>
+            <td>{{ fmtTok(u.cache_hit_tokens) }}</td>
+            <td>{{ rateText(u.input_tokens, u.cache_hit_tokens) }}</td>
             <td>¥{{ fmt(u.cost) }}</td>
-            <td>{{ u.source === "manual" ? t("dashboard.manual") : t("dashboard.proxy") }}</td>
+            <td>{{ sourceLabel(u.source) }}</td>
           </tr>
         </tbody>
       </table>
@@ -238,8 +293,9 @@ onMounted(loadUsage);
 }
 
 .usage-grid {
+  /* 卡片数量会变（输入/输出/缓存命中/命中率/费用），交给 auto-fit 自己铺 */
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 12px;
 }
 .usage-item {

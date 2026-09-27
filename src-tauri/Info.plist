@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  纯菜单栏应用：LSUIElement 让 macOS 从一开始就把本应用当成「Agent」（后台应用），
+	  不出现在程序坞，也不进 Cmd+Tab 切换器。
+	  这比运行时 setActivationPolicy(Accessory) 更早生效 —— 后者要等 setup 跑完，
+	  启动瞬间程序坞里仍会闪一下图标；而且 `tauri dev` 不打包，只能靠运行时那条。
+	  两处都留着：这里管发行版，lib.rs 里的 hide_from_dock() 管 dev。
+	-->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>

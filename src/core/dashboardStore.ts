@@ -29,18 +29,26 @@ const balances = ref<Record<number, BalanceEntry>>({});
 const today = ref<{
   input_tokens: number;
   output_tokens: number;
+  cache_hit_tokens: number;
   cost: number;
   cost_estimated: number;
 }>({
   input_tokens: 0,
   output_tokens: 0,
+  cache_hit_tokens: 0,
   cost: 0,
   cost_estimated: 0,
 });
 const todayByAccount = ref<
   Record<
     number,
-    { input_tokens: number; output_tokens: number; cost: number; cost_estimated: number }
+    {
+      input_tokens: number;
+      output_tokens: number;
+      cache_hit_tokens: number;
+      cost: number;
+      cost_estimated: number;
+    }
   >
 >({});
 const collecting = ref(false);
@@ -124,12 +132,19 @@ export async function loadData(): Promise<void> {
   const byAcc = await todayUsageByAccount();
   const accMap: Record<
     number,
-    { input_tokens: number; output_tokens: number; cost: number; cost_estimated: number }
+    {
+      input_tokens: number;
+      output_tokens: number;
+      cache_hit_tokens: number;
+      cost: number;
+      cost_estimated: number;
+    }
   > = {};
   for (const u of byAcc) {
     accMap[u.account_id] = {
       input_tokens: u.input_tokens,
       output_tokens: u.output_tokens,
+      cache_hit_tokens: u.cache_hit_tokens,
       cost: u.cost,
       cost_estimated: u.cost_estimated,
     };
