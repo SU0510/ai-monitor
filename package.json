@@ -1,6 +1,6 @@
 {
   "name": "ai-monitor",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,8 @@
     "lint": "eslint src --max-warnings=0",
     "typecheck": "vue-tsc --noEmit",
     "test:menubar": "esbuild scripts/menubar.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/menubar.test.mjs --loader:.ts=ts --log-level=error && node node_modules/.cache/menubar.test.mjs",
+    "test:heatmap": "esbuild scripts/heatmap.test.mjs --bundle --format=esm --platform=node --outfile=node_modules/.cache/heatmap.test.mjs --loader:.ts=ts --log-level=error && node node_modules/.cache/heatmap.test.mjs",
+    "test": "npm run test:menubar && npm run test:heatmap",
     "format": "prettier --write src"
   },
   "dependencies": {

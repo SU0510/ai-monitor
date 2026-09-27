@@ -11,8 +11,12 @@ import {
   type ModelUsageRow,
 } from "../core/db";
 import { today, fmt, displayCost, showToast } from "../core/dashboardStore";
+import UsageHeatmap from "./UsageHeatmap.vue";
 
 const { t } = useI18n();
+
+/** 热力图覆盖的自然月数量 */
+const HEATMAP_MONTHS = 6;
 
 const recentUsage = ref<RecentUsageRow[]>([]);
 const monthly = ref<MonthlyUsageRow[]>([]);
@@ -85,6 +89,11 @@ onMounted(loadUsage);
         </div>
       </div>
       <p class="hint">{{ t("dashboard.usageAuto") }}</p>
+    </div>
+
+    <div class="panel">
+      <h3>{{ t("dashboard.heatmapTitle", { months: HEATMAP_MONTHS }) }}</h3>
+      <UsageHeatmap :months="HEATMAP_MONTHS" />
     </div>
 
     <div class="panel">

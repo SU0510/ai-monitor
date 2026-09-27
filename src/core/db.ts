@@ -485,6 +485,33 @@ export async function listRecentUsage(days = 7): Promise<RecentUsageRow[]> {
   );
 }
 
+// ---------------- 日粒度热力图 ----------------
+
+/** 单日全账户合计（供日历热力图使用；只返回有记录的日期） */
+export interface DailyTotalRow {
+  date: string;
+  tokens: number;
+  cost: number;
+  cost_estimated: number;
+  accounts: number;
+}
+
+export async function dailyTotals(months = 6): Promise<DailyTotalRow[]> {
+  const d = getDb();
+  return d.select<DailyTotalRow[]>(
+    `SELECT date,
+            COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+            COALESCE(SUM(cost), 0) AS cost,
+            COALESCE(SUM(cost_estimated), 0) AS cost_estimated,
+            COUNT(DISTINCT account_id) AS accounts
+     FROM daily_usage
+     WHERE date >= date('now', 'localtime', $1)
+     GROUP BY date
+     ORDER BY date ASC`,
+    [`-${Math.max(1, months) * 31 + 7} days`]
+  );
+}
+
 // ---------------- 月度账单 & 模型排行 ----------------
 
 /** 最近 N 个月的月度汇总（费用取权威值 cost，token 为合计） */
