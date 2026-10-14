@@ -168,7 +168,7 @@ async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           account_id INTEGER NOT NULL,
           balance REAL NOT NULL,
-          currency TEXT DEFAULT 'CNY',
+          currency TEXT DEFAULT 'USD',
           available REAL,
           granted REAL,
           fetched_at TEXT DEFAULT (datetime('now', 'localtime'))
@@ -201,7 +201,7 @@ async fn migrate(db: &SqlitePool) -> Result<(), sqlx::Error> {
           input_price REAL DEFAULT 0,
           output_price REAL DEFAULT 0,
           cache_hit_price REAL DEFAULT 0,
-          currency TEXT DEFAULT 'CNY',
+          currency TEXT DEFAULT 'USD',
           UNIQUE(provider_id, model)
         )",
         "CREATE TABLE IF NOT EXISTS alert_rules (

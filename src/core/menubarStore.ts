@@ -79,7 +79,7 @@ export async function requestMenubarPush(): Promise<void> {
 export function buildMenubarData(): MenubarData {
   const accountData = accounts.value.map((acc) => {
     const bal = balances.value[acc.id];
-    const currency = bal?.currency ?? "CNY";
+    const currency = bal?.currency ?? "USD";
     const usage = todayByAccount.value[acc.id];
     return {
       id: acc.id,
@@ -95,8 +95,8 @@ export function buildMenubarData(): MenubarData {
   return {
     accounts: accountData,
     totals: {
-      // 按你的要求先统一用人民币符号展示
-      currency: "CNY",
+      // 跨账户汇总统一按美元展示（余额快照没有 currency 时也走这里）
+      currency: "USD",
       balance: totalBalance.value,
       todayCost: displayCost(today.value.cost, today.value.cost_estimated),
       tokens: today.value.input_tokens + today.value.output_tokens,

@@ -83,7 +83,7 @@ export interface PriceSyncConfig {
   currency: string;
   /**
    * 汇率倍数：写入价格表前乘以此值。
-   * 网关按美元计价、而本应用统一按人民币记账时填 7.1 之类；不换算填 1。
+   * 网关单价与上面的 currency 不同币种时才需要换算，同币种填 1。
    */
   exchangeRate: number;
 }
@@ -217,9 +217,7 @@ const CONFIG_STORAGE_KEY = "custom_api_configs";
 
 export function newConfigId(): string {
   // 自生成随机 id，避免在非 secure context 下 crypto.randomUUID 不可用
-  return (
-    Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10)
-  );
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
 }
 
 /**
@@ -328,6 +326,28 @@ export async function loadCustomConfigs(): Promise<CustomApiConfig[]> {
 
 export async function saveCustomConfigs(configs: CustomApiConfig[]): Promise<void> {
   await setSetting(CONFIG_STORAGE_KEY, JSON.stringify(configs));
+}
+
+/**
+ * 找出「预算窗口内累计消耗」落在快照表的哪一列，配置里没有这种关系时返回 null。
+ *
+ * 只认可验证的映射：余额规则写成 `总额 − 已用`（subtract + operandSource），且这个
+ * 「已用」同时被映射到 granted / available 列。LiteLLM 模板正好如此
+ * （`balance = info.max_budget − info.spend`、`granted = info.spend`），而 `info.spend`
+ * 是按**预算窗口**累计的：窗口重置就归零（1d 预算即本地零点）。
+ *
+ * 这类账户的金额因此可以按本地自然日归属（见 usageStats.dailyCostFromWindowSpend）：
+ * 窗口内的累计值是绝对读数，与采样间隔、应用是否常开都无关。
+ * 拿不到这个映射的账户一律维持原口径，不受影响。
+ */
+export function windowSpendColumn(cfg: CustomApiConfig): "available" | "granted" | null {
+  const balance = cfg.fields?.balance;
+  if (balance?.transform !== "subtract" || !balance.operandSource) return null;
+  for (const col of ["granted", "available"] as const) {
+    const rule = cfg.fields[col];
+    if (rule?.transform === "none" && rule.source === balance.operandSource) return col;
+  }
+  return null;
 }
 
 // ---------------- JSON 路径提取 ----------------
@@ -511,17 +531,15 @@ export function parseCustomResponse(cfg: CustomApiConfig, resp: unknown): Extrac
     }
   }
 
-  const balance = applyClamp(
-    toNumber(extractField(resp, cfg.fields.balance)),
-    cfg.fields.balance
-  );
+  const balance = applyClamp(toNumber(extractField(resp, cfg.fields.balance)), cfg.fields.balance);
   if (balance === undefined) {
-    throw new Error(
-      `无法从响应提取余额字段（路径：${cfg.fields.balance?.source ?? "(未配置)"}）`
-    );
+    throw new Error(`无法从响应提取余额字段（路径：${cfg.fields.balance?.source ?? "(未配置)"}）`);
   }
 
-  const available = applyClamp(toNumber(extractField(resp, cfg.fields.available)), cfg.fields.available);
+  const available = applyClamp(
+    toNumber(extractField(resp, cfg.fields.available)),
+    cfg.fields.available
+  );
   const granted = applyClamp(toNumber(extractField(resp, cfg.fields.granted)), cfg.fields.granted);
   const currencyRaw = extractField(resp, cfg.fields.currency);
   const currency = typeof currencyRaw === "string" && currencyRaw !== "" ? currencyRaw : "USD";

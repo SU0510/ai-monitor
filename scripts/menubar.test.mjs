@@ -32,7 +32,7 @@ const mk = (id, label, balance, spent) => ({
 // 夹具里的账户名一律用虚构值：仓库是公开的，别写真实账户名
 const data = {
   accounts: [mk(1, "demo-a", 91.0790588, 3.0599), mk(2, "demo-b", 82.595778, 11.25)],
-  totals: { currency: "CNY", balance: 173.67, todayCost: 13.95, tokens: 2660, quota: null },
+  totals: { currency: "USD", balance: 173.67, todayCost: 13.95, tokens: 2660, quota: null },
   collecting: false,
   hasError: false,
 };
@@ -158,7 +158,7 @@ eq(
     }),
     data
   ).titles,
-  ["¥173.67", "demo-a $91.08 · 3h 10%"],
+  ["$173.67", "demo-a $91.08 · 3h 10%"],
   "aggregate frame first"
 );
 eq(
@@ -215,7 +215,7 @@ const menuCfg = (extra) => N({ ...base, slots: menuSlots, ...extra });
 eq(
   renderMenubar(menuCfg({}), data).menu,
   [
-    { id: "agg", label: "¥173.67", enabled: true },
+    { id: "agg", label: "$173.67", enabled: true },
     { id: "acc-1", label: "demo-a $91.08 · 3h 10%", enabled: true },
     { id: "acc-2", label: "demo-b $82.60", enabled: true },
   ],

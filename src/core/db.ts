@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS balance_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL,
   balance REAL NOT NULL,
-  currency TEXT DEFAULT 'CNY',
+  currency TEXT DEFAULT 'USD',
   available REAL,
   granted REAL,
   fetched_at TEXT DEFAULT (datetime('now', 'localtime'))
@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS price_table (
   input_price REAL DEFAULT 0,
   output_price REAL DEFAULT 0,
   cache_hit_price REAL DEFAULT 0,
-  currency TEXT DEFAULT 'CNY',
+  currency TEXT DEFAULT 'USD',
   UNIQUE(provider_id, model)
 );
 
@@ -678,6 +678,6 @@ export async function upsertPrice(p: {
        output_price = excluded.output_price,
        cache_hit_price = excluded.cache_hit_price,
        currency = excluded.currency`,
-    [p.providerId, p.model, p.inputPrice, p.outputPrice, p.cacheHitPrice, p.currency ?? "CNY"]
+    [p.providerId, p.model, p.inputPrice, p.outputPrice, p.cacheHitPrice, p.currency ?? "USD"]
   );
 }

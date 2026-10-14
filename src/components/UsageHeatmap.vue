@@ -161,7 +161,7 @@ onMounted(async () => {
       <div class="hm-tip-date">{{ tipDate(tip.cell.date) }}</div>
       <div class="hm-tip-row">
         <span>{{ t("dashboard.cost") }}</span>
-        <b>¥{{ tipCost(tip.cell.date) }}</b>
+        <b>${{ tipCost(tip.cell.date) }}</b>
       </div>
       <!-- token 只在真的有记录时才显示：余额差值记账的日期 token 恒为 0，显示出来只会让人误以为漏记 -->
       <div v-if="totals.get(tip.cell.date)?.tokens" class="hm-tip-row">

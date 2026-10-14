@@ -37,16 +37,18 @@ function rateText(inputTokens: number, cacheHitTokens: number): string {
   return inputTokens > 0 ? fmtRate(cacheHitRate(inputTokens, cacheHitTokens)) : "—";
 }
 
-/** 来源标签：manual=手动记账，proxy=本地代理，balance=余额差值，gateway=网关同步 */
+/** 来源标签：manual=手动记账，proxy=本地代理，balance=余额差值，budget=预算窗口，gateway=网关同步 */
 function sourceLabel(source: string): string {
   const key =
     source === "manual"
       ? "manual"
       : source === "balance"
         ? "balance"
-        : source === "gateway"
-          ? "gateway"
-          : "proxy";
+        : source === "budget"
+          ? "budget"
+          : source === "gateway"
+            ? "gateway"
+            : "proxy";
   return t(`dashboard.${key}`);
 }
 
@@ -128,7 +130,7 @@ onMounted(loadUsage);
         </div>
         <div class="usage-item">
           <div class="usage-label">{{ t("dashboard.estimatedCost") }}</div>
-          <div class="usage-value">¥{{ fmt(displayCost(today.cost, today.cost_estimated)) }}</div>
+          <div class="usage-value">${{ fmt(displayCost(today.cost, today.cost_estimated)) }}</div>
         </div>
       </div>
       <p class="hint">{{ t("dashboard.usageAuto") }}</p>
@@ -150,7 +152,7 @@ onMounted(loadUsage);
           :class="{ current: isCurrentMonth(m.month) }"
         >
           <div class="month-name">{{ m.month }}</div>
-          <div class="month-cost">¥{{ fmt(displayCost(m.cost, m.cost_estimated)) }}</div>
+          <div class="month-cost">${{ fmt(displayCost(m.cost, m.cost_estimated)) }}</div>
           <div class="month-meta">
             {{ fmtTok(m.input_tokens + m.output_tokens) }} {{ t("dashboard.monthlyTokens") }} ·
             {{ m.days }}
@@ -180,7 +182,7 @@ onMounted(loadUsage);
         <tbody>
           <tr v-for="m in modelRank" :key="m.model">
             <td>{{ m.model }}</td>
-            <td>¥{{ fmt(m.cost_estimated) }}</td>
+            <td>${{ fmt(m.cost_estimated) }}</td>
             <td>{{ fmtTok(m.input_tokens) }}</td>
             <td>{{ fmtTok(m.output_tokens) }}</td>
             <td>{{ fmtTok(m.calls) }}</td>
@@ -213,7 +215,7 @@ onMounted(loadUsage);
             <td>{{ fmtTok(u.output_tokens) }}</td>
             <td>{{ fmtTok(u.cache_hit_tokens) }}</td>
             <td>{{ rateText(u.input_tokens, u.cache_hit_tokens) }}</td>
-            <td>¥{{ fmt(u.cost) }}</td>
+            <td>${{ fmt(u.cost) }}</td>
             <td>{{ sourceLabel(u.source) }}</td>
           </tr>
         </tbody>

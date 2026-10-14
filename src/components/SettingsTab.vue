@@ -437,9 +437,9 @@ onMounted(async () => {
           <tr v-for="p in prices" :key="p.id">
             <td>{{ getProvider(p.provider_id)?.name ?? p.provider_id }}</td>
             <td>{{ p.model }}</td>
-            <td>¥{{ p.input_price }}</td>
-            <td>¥{{ p.output_price }}</td>
-            <td>¥{{ p.cache_hit_price }}</td>
+            <td>${{ p.input_price }}</td>
+            <td>${{ p.output_price }}</td>
+            <td>${{ p.cache_hit_price }}</td>
           </tr>
         </tbody>
       </table>

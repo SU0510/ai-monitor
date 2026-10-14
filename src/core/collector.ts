@@ -12,6 +12,8 @@ import {
   type BalanceInfo,
 } from "./db";
 import { getProvider, getCustomConfig } from "../providers";
+import { windowSpendColumn } from "./customApi";
+import { dailyCostFromWindowSpend } from "./usageStats";
 import { checkAlerts } from "./alert";
 import { syncPricesIfNeeded } from "./platformSync";
 import { syncTokensForAccount } from "./tokenSync";
@@ -25,6 +27,9 @@ import { syncTokensForAccount } from "./tokenSync";
  * 而余额差值只能看到「本应用开始运行之后」的那部分，首日和当天都会偏小；
  * 网关的预算窗口也可能是滚动 24 小时，跨窗口时按自然日切分会进一步失真。
  * 因此这里先按账户筛掉「有查询能力」的，再用 source<>'gateway' 兜住已经写入网关金额的日期。
+ *
+ * 还有一类账户两头都不走：余额规则里带着「预算窗口累计消耗」（windowSpendColumn），
+ * 它们的金额由 syncCostFromWindowSpend 按本地自然日精确归属，这里也一并跳过。
  */
 export async function syncCostFromBalance(): Promise<void> {
   try {
@@ -33,8 +38,14 @@ export async function syncCostFromBalance(): Promise<void> {
     // 哪些账户能查到逐日消耗？这些账户不再走差值（配置里配了金额字段即视为有查询能力）
     const accounts = await listAccounts();
     const queryCapable = new Set<number>();
+    const counterAccounts = new Set<number>();
     for (const a of accounts) {
-      if (getCustomConfig(a.provider_id)?.tokenSync?.costField) queryCapable.add(a.id);
+      const cfg = getCustomConfig(a.provider_id);
+      if (cfg && windowSpendColumn(cfg)) {
+        counterAccounts.add(a.id); // 金额走预算窗口口径，差值会把它算小（漏掉当天首条快照之前）
+        continue;
+      }
+      if (cfg?.tokenSync?.costField) queryCapable.add(a.id);
     }
 
     // 每天每条余额快照（含日期）；只扫近 45 天，避免全表读入 JS
@@ -70,6 +81,7 @@ export async function syncCostFromBalance(): Promise<void> {
     for (const [accIdStr, days] of Object.entries(byAcc)) {
       const accId = Number(accIdStr);
       if (queryCapable.has(accId)) continue; // 能查询的账户：金额一律以网关为准，不用差值
+      if (counterAccounts.has(accId)) continue; // 预算窗口口径的账户：金额由 syncCostFromWindowSpend 写
       for (const dayInfo of days) {
         const diff = dayInfo.consumed; // 正 = 消耗
         if (diff <= 0.0001) continue; // 充值日或余额未变，跳过
@@ -86,6 +98,80 @@ export async function syncCostFromBalance(): Promise<void> {
     }
   } catch (e) {
     console.error("余额差值计费同步失败", e);
+  }
+}
+
+/**
+ * 按「预算窗口累计消耗」把金额归属到本地自然日（仅限配置里带这种映射的账户）。
+ *
+ * 为什么不直接用网关的逐日金额：LiteLLM 的 /user/daily/activity 按 **UTC 日**分桶，
+ * 东八区只有本地 08:00 之后才算「今天」，00:00–08:00 那段落进前一天的行里；而它的
+ * 预算窗口按本地零点重置（账面 100 − 余额 才是当天已用）。两个口径差一个时区偏移，
+ * 于是「今日用量」会明显小于「限额 − 余额」。窗口内的累计消耗（info.spend，映射到
+ * 快照的 granted 列）则天然对齐本地零点：当天最后一条采样就是当天金额，且不依赖
+ * 连续采样 —— 应用停机那几小时的用量同样算得进来。
+ *
+ * 跑在 token 同步之后（doCollectAll 里的顺序）：网关写进去的金额是 UTC 日桶，这里把
+ * 有采样覆盖的本地日改回正确值。没有采样覆盖的历史日期（应用开始运行之前）保持原样。
+ */
+export async function syncCostFromWindowSpend(): Promise<void> {
+  try {
+    const d = getDb();
+    const accounts = await listAccounts();
+    const columnByAcc = new Map<number, "available" | "granted">();
+    for (const a of accounts) {
+      const cfg = getCustomConfig(a.provider_id);
+      const col = cfg ? windowSpendColumn(cfg) : null;
+      if (col) columnByAcc.set(a.id, col);
+    }
+    if (columnByAcc.size === 0) return;
+
+    // 与余额差值同一时间窗（45 天）就够：应用留下的快照都在里面
+    const rows = await d.select<
+      { account_id: number; available: number | null; granted: number | null; day: string }[]
+    >(
+      `SELECT account_id, available, granted, substr(fetched_at, 1, 10) AS day
+       FROM balance_snapshots
+       WHERE fetched_at >= datetime('now', 'localtime', '-45 days')
+       ORDER BY account_id, fetched_at ASC`
+    );
+
+    const samplesByAcc = new Map<number, { day: string; spend: number }[]>();
+    for (const r of rows) {
+      const col = columnByAcc.get(r.account_id);
+      if (!col) continue;
+      const spend = col === "granted" ? r.granted : r.available;
+      if (spend === null || !Number.isFinite(spend)) continue;
+      const arr = samplesByAcc.get(r.account_id);
+      if (arr) arr.push({ day: r.day, spend });
+      else samplesByAcc.set(r.account_id, [{ day: r.day, spend }]);
+    }
+
+    for (const [accountId, samples] of samplesByAcc) {
+      const costs = dailyCostFromWindowSpend(samples);
+      if (costs.size === 0) continue;
+      const existing = new Map<string, { cost: number; source: string }>();
+      const cur = await d.select<{ date: string; cost: number; source: string }[]>(
+        "SELECT date, cost, source FROM daily_usage WHERE account_id = $1",
+        [accountId]
+      );
+      for (const r of cur) existing.set(r.date, { cost: r.cost, source: r.source });
+
+      for (const [day, cost] of costs) {
+        const old = existing.get(day);
+        // 已经是我们写下的同一个值就不再写：否则每轮采集都会重写一遍（WAL 白涨）
+        if (old && old.source === "budget" && Math.abs(old.cost - cost) < 1e-9) continue;
+        await d.execute(
+          `INSERT INTO daily_usage (account_id, date, cost, source)
+           VALUES ($1, $2, $3, 'budget')
+           ON CONFLICT(account_id, date) DO UPDATE SET cost = excluded.cost, source = 'budget'
+           WHERE daily_usage.source <> 'manual'`,
+          [accountId, day, cost]
+        );
+      }
+    }
+  } catch (e) {
+    console.error("预算窗口金额归属失败", e);
   }
 }
 
@@ -184,6 +270,9 @@ async function doCollectAll(): Promise<{ ok: number; failed: number; errors: str
   await emit(EVENT_BALANCE_UPDATED);
   await checkAlerts();
   await syncCostFromBalance();
+  // 放在 token 同步之后：网关逐日金额按 UTC 日分桶，这里把有快照覆盖的本地日用
+  // 预算窗口口径改回来（两条路写的是同一批行，顺序反了会留下错位的金额）
+  await syncCostFromWindowSpend();
   await emit(EVENT_BALANCE_UPDATED);
   // 每日自动同步平台模型价格（硅基流动等，节流 24h）
   await syncPricesIfNeeded().catch(() => {});

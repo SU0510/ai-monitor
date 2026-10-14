@@ -15,6 +15,7 @@ import {
   extractQuotas,
   buildUrl,
   buildHeaders,
+  windowSpendColumn,
 } from "../src/core/customApi.ts";
 
 let pass = 0;
@@ -222,6 +223,44 @@ eq(
   "LiteLLM 形态的限额仍能解析"
 );
 eq(extractQuotas({ remaining: 5 }, generic.quota), [], "普通接口没有限额路径 → 静默为空，不报错");
+
+// ---------- windowSpendColumn（余额规则里的「已用」落在哪一列） ----------
+// 命中时金额改按本地自然日归属（预算窗口口径）；不命中就维持原口径，不能乱认。
+
+eq(windowSpendColumn(litellmPreset()), "granted", "LiteLLM 模板：info.spend 映射在 granted 列");
+eq(windowSpendColumn(genericUsagePreset()), null, "通用模板：没有「总额 − 已用」关系");
+eq(
+  windowSpendColumn({
+    ...litellmPreset(),
+    fields: {
+      balance: { source: "info.max_budget", transform: "subtract", operandSource: "info.spend" },
+      available: { source: "info.spend", transform: "none" },
+    },
+  }),
+  "available",
+  "减数映射在 available 列时返回 available"
+);
+eq(
+  windowSpendColumn({
+    ...litellmPreset(),
+    fields: {
+      balance: { source: "info.max_budget", transform: "subtract", operandSource: "info.spend" },
+    },
+  }),
+  null,
+  "只写了余额规则、没单独映射减数：返回 null（不改口径）"
+);
+eq(
+  windowSpendColumn({
+    ...litellmPreset(),
+    fields: {
+      balance: { source: "remaining", transform: "none" },
+      granted: { source: "info.spend", transform: "none" },
+    },
+  }),
+  null,
+  "余额不是减法规则：返回 null"
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

@@ -606,12 +606,12 @@ onMounted(async () => {
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t("dashboard.statBalance") }}</div>
-        <div class="stat-value">{{ fmt(totalBalance) }} <span class="unit">¥</span></div>
+        <div class="stat-value">{{ fmt(totalBalance) }} <span class="unit">$</span></div>
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t("dashboard.statToday") }}</div>
         <div class="stat-value">
-          {{ fmt(displayCost(today.cost, today.cost_estimated)) }} <span class="unit">¥</span>
+          {{ fmt(displayCost(today.cost, today.cost_estimated)) }} <span class="unit">$</span>
         </div>
       </div>
     </div>

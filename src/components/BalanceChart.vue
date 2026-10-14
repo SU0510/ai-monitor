@@ -137,7 +137,7 @@ async function render(): Promise<void> {
         axisLabel: {
           color: "#60a5fa",
           fontSize: 10,
-          formatter: (v: number) => `¥${v}`,
+          formatter: (v: number) => `$${v}`,
         },
       },
       {

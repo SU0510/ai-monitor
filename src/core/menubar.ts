@@ -51,7 +51,7 @@ export interface MenubarConfig {
   rotateFixedWidth: boolean;
   /** 极简模式：只留数字，去掉账户名与单位，金额固定 1 位小数 */
   minimal: boolean;
-  /** 极简模式下是否带货币符号（¥）；关掉就是纯数字 */
+  /** 极简模式下是否带货币符号（$）；关掉就是纯数字 */
   minimalSymbol: boolean;
 }
 
@@ -218,7 +218,7 @@ function money(amount: number, currency: string, compact: boolean): string {
   return compact ? compactMoney(amount, currency) : formatMoney(amount, currency);
 }
 
-/** 极简模式的金额：固定 1 位小数、无千分位；withSymbol 决定要不要 ¥ */
+/** 极简模式的金额：固定 1 位小数、无千分位；withSymbol 决定要不要货币符号 */
 export function formatMoney1(amount: number, currency: string, withSymbol: boolean): string {
   const sign = amount < 0 ? "-" : "";
   const abs = Math.abs(amount).toFixed(1);

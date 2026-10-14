@@ -653,9 +653,9 @@ onUnmounted(() => {
       <span class="brand">{{ t("overlay.brand") }}</span>
       <span class="divider"></span>
       <span class="bal" :style="{ color: statusColor(totalBalance) }"
-        >¥{{ fmt(totalBalance) }}</span
+        >${{ fmt(totalBalance) }}</span
       >
-      <span class="spend">-¥{{ fmt(displayCost(today.cost, today.cost_estimated)) }}</span>
+      <span class="spend">-${{ fmt(displayCost(today.cost, today.cost_estimated)) }}</span>
       <span class="tok">{{ compactTok(today.input_tokens + today.output_tokens) }} tok</span>
       <span v-if="mode === 'capsule'" class="chevron">›</span>
       <div v-else class="head-actions">
@@ -686,7 +686,7 @@ onUnmounted(() => {
               <span class="m-bal" :style="{ color: statusColor(a.balance ?? 0) }">
                 {{ a.balance !== null ? fmt(a.balance) : "--" }}
               </span>
-              <span class="m-cost">-¥{{ fmt(a.todayCost) }}</span>
+              <span class="m-cost">-${{ fmt(a.todayCost) }}</span>
               <span class="m-tok">
                 <b>{{ compactTok(a.tokens) }} tok</b>
                 <i :title="t('overlay.cacheHitTokens', { hit: fmtTokFull(a.cacheTok) })">
@@ -721,7 +721,7 @@ onUnmounted(() => {
             rate: rateText(today.input_tokens, today.cache_hit_tokens),
           })
         }}</span>
-        <span class="cost">¥{{ fmt(displayCost(today.cost, today.cost_estimated)) }}</span>
+        <span class="cost">${{ fmt(displayCost(today.cost, today.cost_estimated)) }}</span>
         <span class="time" :class="{ failed: lastCollectFailedAt }">{{
           lastCollectFailedAt
             ? t("overlay.collectFailed", { time: lastCollectFailedAt })

@@ -56,7 +56,7 @@ export async function checkAlerts(): Promise<void> {
 
     const names = lowOnes.map((a) => a.name).join("、");
     const title = "⚠️ AI 账户余额不足";
-    const body = `${names} 余额低于 ¥${threshold}${droppedMore ? `，且较上次告警进一步下降（现最低 ¥${currentLow.toFixed(2)}）` : ""}，请及时充值`;
+    const body = `${names} 余额低于 $${threshold}${droppedMore ? `，且较上次告警进一步下降（现最低 $${currentLow.toFixed(2)}）` : ""}，请及时充值`;
 
     // 系统通知
     await notify(title, body);
