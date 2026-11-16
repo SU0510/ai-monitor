@@ -62,6 +62,13 @@ function isWindowReset(value: number, prev: number): boolean {
 export function dailyCostFromWindowSpend(
   samples: readonly WindowSpendSample[]
 ): Map<string, number> {
+  // 负数采样说明这不是「从 0 开始累计」的窗口计数器：LiteLLM 旧版 budget reset
+  // 会把 spend 减成负数（未用额度/结转），此时无法从累计值还原每日金额。
+  // 直接放弃，让调用方保留网关逐日接口写入的真实 spend，而不是用 0 覆盖它。
+  for (const s of samples) {
+    if (Number.isFinite(s.spend) && s.spend < 0) return new Map();
+  }
+
   const byDay = new Map<string, number[]>();
   for (const s of samples) {
     if (!s.day || !Number.isFinite(s.spend)) continue;

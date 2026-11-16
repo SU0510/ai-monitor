@@ -173,6 +173,15 @@ eq(
   0,
   "单点 + 看不到重置（无前一段可比）：不产出，保留库里已有的值"
 );
+eq(
+  dailyCostFromWindowSpend([
+    { day: "2026-11-15", spend: 25.6831 },
+    { day: "2026-11-16", spend: -97.0921 },
+    { day: "2026-11-16", spend: -88.56 },
+  ]).size,
+  0,
+  "负累计值（budget reset 结转）：不产出，保留网关逐日 spend"
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
