@@ -11,7 +11,7 @@ import {
 } from "../core/db";
 import { collectAll } from "../core/collector";
 import { windowMinutes } from "./quota";
-import { syncCustomProviders } from "../providers";
+import { syncCustomProviders, getCustomConfig } from "../providers";
 import type { QuotaWindow } from "../providers/types";
 
 /**
@@ -107,8 +107,7 @@ export async function loadData(): Promise<void> {
       }
     }
   }
-  balances.value = map;
-
+  // 自定义日额度账户的余额要等今天的 usage 算完再覆盖，见下方 dailyLimit 循环
   const qRows = await latestQuotas();
   const qMap: Record<number, QuotaWindow[]> = {};
   for (const q of qRows) {
@@ -149,6 +148,20 @@ export async function loadData(): Promise<void> {
       cost_estimated: u.cost_estimated,
     };
   }
+  // 自定义日额度网关（USTC/LiteLLM）：卡片显示「日额度 - 当日真实消耗」。
+  // /key/info 的 spend 在 reset 时可能变成负数或带结转，不能直接当余额/今日用量；
+  // 今日真实消耗来自 tokenSync 写入的 daily_usage（source=gateway）。
+  for (const acc of accounts.value) {
+    const limit = Number(getCustomConfig(acc.provider_id)?.dailyLimit);
+    const cur = map[acc.id];
+    if (!Number.isFinite(limit) || limit <= 0 || !cur) continue;
+    const usage = accMap[acc.id];
+    cur.balance = Math.max(
+      0,
+      limit - displayCost(usage?.cost ?? 0, usage?.cost_estimated ?? 0)
+    );
+  }
+  balances.value = map;
   todayByAccount.value = accMap;
 }
 

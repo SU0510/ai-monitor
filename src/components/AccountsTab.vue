@@ -964,6 +964,20 @@ onMounted(async () => {
             <input v-model="customDraft.syncTokenHistory" type="checkbox" />
             <span>{{ t("dashboard.customApi.syncTokenHistory") }}</span>
           </label>
+          <div class="field-grid">
+            <label class="field">
+              <span>{{ t("dashboard.customApi.dailyLimit") }}</span>
+              <input
+                v-model.number="customDraft.dailyLimit"
+                class="input num"
+                type="number"
+                step="0.01"
+                min="0"
+                placeholder="100"
+              />
+            </label>
+          </div>
+          <p class="hint">{{ t("dashboard.customApi.dailyLimitHint") }}</p>
         </div>
 
         <div class="modal-actions">

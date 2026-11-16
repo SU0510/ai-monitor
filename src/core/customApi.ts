@@ -153,6 +153,12 @@ export interface CustomApiConfig {
   syncTokens?: boolean;
   /** 同步 token 时是否拉取全部历史（关掉则只同步最近若干天） */
   syncTokenHistory?: boolean;
+  /**
+   * 日额度（USD）。设置后，账户卡片显示「日额度 - 当日真实消耗」，
+   * 不再直接展示 /key/info 的 max_budget - spend —— 后者在网关 reset
+   * 时会变成负数或超过额度（LiteLLM 旧版 rollover/reset 语义）。
+   */
+  dailyLimit?: number;
   /** 是否自动注入 Authorization: Bearer <key> */
   bearerAuth: boolean;
   /** 封禁/无效判定字段路径（为真则视为无效），如 "info.blocked" */

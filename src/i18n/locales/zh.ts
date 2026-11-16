@@ -127,6 +127,9 @@ export default {
         "从网关的逐日用量接口（默认 /user/daily/activity）拉取每天的输入 / 输出 / 缓存命中 token 与当日消耗金额，写入本地用量统计 —— 以后 token 与金额都以网关为准，热力图也就有了历史颜色。该接口按页返回，「同步全部历史」会自动逐页取回（不设页数上限的话只能看到最近几天）。写入是覆盖式的，重复同步不会翻倍。",
       syncTokens: "随采集自动同步 token",
       syncTokenHistory: "同步全部历史（不勾选则只同步最近 7 天）",
+      dailyLimit: "日额度（USD，可选）",
+      dailyLimitHint:
+        "填了以后账户卡片显示「日额度 - 今日消耗」。不填则继续用网关返回的 max_budget - spend —— 该值在重置/结转时可能为负或超过额度。",
       tokenSyncNow: "立即同步",
       syncing: "同步中…",
       tokenSyncOk: "已同步 {accounts} 个账户共 {days} 天（消耗合计 {cost}）",

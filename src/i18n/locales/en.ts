@@ -128,6 +128,9 @@ export default {
         "Pulls per-day input / output / cache-hit tokens and that day's spend from the gateway's daily-activity endpoint (default /user/daily/activity) into the local database, so usage figures and the heatmap come from the gateway. The endpoint is paginated; \"sync all history\" walks every page (without a page size you only ever see the last few days). Writes overwrite, so re-syncing never doubles.",
       syncTokens: "Sync tokens on every collection",
       syncTokenHistory: "Sync all history (unchecked: last 7 days only)",
+      dailyLimit: "Daily limit (USD, optional)",
+      dailyLimitHint:
+        "When set, the account card shows \"daily limit - today's spend\". Leave empty to keep using the gateway's max_budget - spend, which can go negative or above the limit after a reset/rollover.",
       tokenSyncNow: "Sync now",
       syncing: "Syncing…",
       tokenSyncOk: "Synced {days} days for {accounts} account(s) (spend {cost})",
